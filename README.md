@@ -89,7 +89,7 @@ hexapod neutral --height 80
 hexapod serve
 ```
 
-Open the URL it prints from any device on the same network.
+It lists every address it is reachable at. Use the one on your wifi or ethernet interface (`en0`, `wlan0`, `eth0`). If you are on a VPN, the tunnel address is listed too and marked. It will not work from other devices.
 
 ## Web interface
 

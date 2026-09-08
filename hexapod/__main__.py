@@ -245,7 +245,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     controller.start()
     app = create_app(controller, config)
 
-    print(f"\n  hexapod control on http://{_lan_ip()}:{args.port}  ({'dry run' if args.dry_run else config.port})\n")
+    print(f"\n  {'dry run, no serial port' if args.dry_run else 'board on ' + config.port}")
+    _print_urls(args.port)
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", ws_ping_interval=5)
     finally:
@@ -254,17 +255,74 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _lan_ip() -> str:
-    import socket
+# Interfaces that are never the LAN the robot is on. A VPN usually owns the
+# default route, so following the route to the internet finds the tunnel, not
+# the network your laptop is actually on.
+_TUNNEL_PREFIXES = ("utun", "tun", "tap", "wg", "ppp", "tailscale", "zt",
+                    "docker", "br-", "veth", "virbr", "awdl", "llw", "bridge")
+_PHYSICAL_PREFIXES = ("en", "eth", "wlan", "wl", "wlp", "enp", "eno")
 
-    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+def _interface_addresses() -> List[tuple]:
+    """(interface, ipv4) for every configured interface, most likely LAN first."""
+    import subprocess
+
+    found = []
     try:
-        probe.connect(("192.0.2.1", 1))  # TEST-NET-1: never routed, just reveals the local interface
-        return probe.getsockname()[0]
-    except OSError:
-        return "localhost"
-    finally:
-        probe.close()
+        if sys.platform.startswith("linux"):
+            output = subprocess.run(
+                ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                capture_output=True, text=True, timeout=2, check=False,
+            ).stdout
+            for line in output.splitlines():
+                parts = line.split()
+                if len(parts) >= 4 and parts[2] == "inet":
+                    found.append((parts[1], parts[3].split("/")[0]))
+        else:
+            output = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=2, check=False).stdout
+            interface = ""
+            for line in output.splitlines():
+                if line and not line[0].isspace():
+                    interface = line.split(":")[0]
+                    continue
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] == "inet":
+                    found.append((interface, parts[1]))
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    usable = [
+        (name, address)
+        for name, address in found
+        if not address.startswith(("127.", "169.254."))
+    ]
+
+    def rank(entry) -> int:
+        name = entry[0]
+        if name.startswith(_TUNNEL_PREFIXES):
+            return 2
+        if name.startswith(_PHYSICAL_PREFIXES):
+            return 0
+        return 1
+
+    return sorted(usable, key=rank)
+
+
+def _print_urls(port: int) -> None:
+    """List every address the page is reachable at, best guess first."""
+    addresses = _interface_addresses()
+    if not addresses:
+        print(f"\n  hexapod control on http://localhost:{port}\n", flush=True)
+        return
+    rows = [(f"http://{address}:{port}", name,
+             "VPN or virtual, probably not your LAN" if name.startswith(_TUNNEL_PREFIXES) else "")
+            for name, address in addresses]
+    rows.append((f"http://localhost:{port}", "", "this machine only"))
+    width = max(len(url) for url, _, _ in rows)
+    print("\n  hexapod control on:")
+    for url, name, note in rows:
+        print(f"    {url:<{width}}  {name:<8} {note}".rstrip())
+    print(flush=True)
 
 
 # --- argument parsing -------------------------------------------------------------
