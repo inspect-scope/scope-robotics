@@ -1,0 +1,154 @@
+"""Load and validate config/hexapod.yaml."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from typing import Dict, List, Tuple
+
+import yaml
+
+JOINTS = ("coxa", "femur", "tibia")
+DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "hexapod.yaml")
+
+
+@dataclass(frozen=True)
+class ServoCal:
+    channel: int
+    us_neg45: float
+    us_pos45: float
+    direction: int = 1
+
+    def pulse_for(self, servo_angle_deg: float) -> float:
+        """Linear interpolation through the two calibration points."""
+        span = self.us_pos45 - self.us_neg45
+        return self.us_neg45 + (servo_angle_deg + 45.0) / 90.0 * span
+
+
+@dataclass(frozen=True)
+class TouchCal:
+    channel: int
+    active_high: bool
+
+
+@dataclass(frozen=True)
+class LegConfig:
+    name: str
+    coxa_xy: Tuple[float, float]
+    yaw_deg: float
+    neutral_xy: Tuple[float, float]
+    servos: Dict[str, ServoCal]
+
+
+@dataclass(frozen=True)
+class Geometry:
+    coxa_len: float
+    femur_len: float
+    tibia_len: float
+    leg_connection_z: float
+    coxa_attach_angle: float
+    femur_attach_angle: float
+    tibia_attach_angle: float
+
+    def attach_angle(self, joint: str) -> float:
+        return getattr(self, f"{joint}_attach_angle")
+
+
+@dataclass(frozen=True)
+class Stance:
+    ride_height: float
+    sit_height: float
+    step_lift: float
+    cycle_s: float
+    max_speed: float
+    max_yaw_rate: float
+    max_stride: float
+
+
+@dataclass(frozen=True)
+class Limits:
+    pulse_us: Tuple[float, float]
+    coxa_deg: Tuple[float, float]
+    femur_deg: Tuple[float, float]
+    tibia_deg: Tuple[float, float]
+
+    def joint_range(self, joint: str) -> Tuple[float, float]:
+        return getattr(self, f"{joint}_deg")
+
+
+@dataclass(frozen=True)
+class Config:
+    port: str
+    baudrate: int
+    timeout_s: float
+    rate_hz: float
+    telemetry_hz: float
+    watchdog_ms: float
+    geometry: Geometry
+    stance: Stance
+    limits: Limits
+    legs: Dict[str, LegConfig]
+    tripod_groups: List[List[str]]
+    touch: Dict[str, TouchCal]
+    touch_threshold_v: float
+    leg_order: List[str] = field(default_factory=list)
+
+
+def load(path: str = DEFAULT_CONFIG) -> Config:
+    with open(path) as handle:
+        raw = yaml.safe_load(handle)
+
+    geometry = Geometry(**raw["geometry"])
+    stance = Stance(**raw["stance"])
+    limits = Limits(
+        pulse_us=tuple(raw["limits"]["pulse_us"]),
+        coxa_deg=tuple(raw["limits"]["coxa_deg"]),
+        femur_deg=tuple(raw["limits"]["femur_deg"]),
+        tibia_deg=tuple(raw["limits"]["tibia_deg"]),
+    )
+
+    legs: Dict[str, LegConfig] = {}
+    for name, leg in raw["legs"].items():
+        servos = {joint: ServoCal(**raw["servos"][name][joint]) for joint in JOINTS}
+        legs[name] = LegConfig(
+            name=name,
+            coxa_xy=tuple(leg["coxa"]),
+            yaw_deg=float(leg["yaw"]),
+            neutral_xy=tuple(leg["neutral"]),
+            servos=servos,
+        )
+
+    touch_raw = dict(raw.get("touch_sensors") or {})
+    threshold = float(touch_raw.pop("threshold_v", 1.6))
+    touch = {name: TouchCal(**cal) for name, cal in touch_raw.items()}
+
+    used: Dict[int, str] = {}
+    for leg in legs.values():
+        for joint, cal in leg.servos.items():
+            if cal.channel in used:
+                raise ValueError(f"servo channel {cal.channel} claimed by both {used[cal.channel]} and {leg.name}.{joint}")
+            used[cal.channel] = f"{leg.name}.{joint}"
+    if len(used) != 18:
+        raise ValueError(f"expected 18 servo channels, config defines {len(used)}")
+
+    groups = [list(group) for group in raw["tripod_groups"]]
+    flat = [name for group in groups for name in group]
+    if sorted(flat) != sorted(legs):
+        raise ValueError("tripod_groups must name every leg exactly once")
+
+    return Config(
+        port=raw["serial"]["port"],
+        baudrate=int(raw["serial"]["baudrate"]),
+        timeout_s=float(raw["serial"]["timeout_s"]),
+        rate_hz=float(raw["control"]["rate_hz"]),
+        telemetry_hz=float(raw["control"]["telemetry_hz"]),
+        watchdog_ms=float(raw["control"]["watchdog_ms"]),
+        geometry=geometry,
+        stance=stance,
+        limits=limits,
+        legs=legs,
+        tripod_groups=groups,
+        touch=touch,
+        touch_threshold_v=threshold,
+        leg_order=list(raw["legs"].keys()),
+    )

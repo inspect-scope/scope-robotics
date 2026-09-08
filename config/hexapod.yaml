@@ -1,0 +1,98 @@
+# Hexapod configuration for the Pi-side stack.
+#
+# Servo channels, calibration and geometry are ported from MakeYourPet's
+# chica-config-2040.txt. The P-numbers in that file are the same integers the
+# Servo2040 firmware uses as protocol channel indices, so `channel: 15` here is
+# `P15` there.
+#
+# The stance block is *ours*, not a bit-exact copy of Chica's MODE_STANDARD.
+# The numbers are derived from MODE_STANDARD's radius/angle/elongation and land
+# every foot ~138.5 mm out from its own coxa, which is what those constants were
+# tuned to do.
+
+serial:
+  port: /dev/ttyACM0       # Pi: usually ttyACM0. macOS: /dev/tty.usbmodem*
+  baudrate: 115200         # ignored by USB CDC, kept because pyserial wants it
+  timeout_s: 0.05
+
+control:
+  rate_hz: 50              # servo update rate
+  telemetry_hz: 5          # how often to GET volts/amps/touch
+  watchdog_ms: 300         # no fresh servo frame for this long -> torque off
+
+limits:
+  pulse_us: [700, 2300]    # hard clamp on anything sent to a servo channel
+  coxa_deg: [-45, 45]
+  femur_deg: [-60, 75]
+  tibia_deg: [-30, 130]
+
+geometry:
+  # Leg segment lengths, mm (COXA_LEN / FEMUR_LEN / TIBIA_LEN).
+  coxa_len: 43
+  femur_len: 80
+  tibia_len: 134
+  # Where the legs meet the frame, relative to the body origin (LEG_CONNECTION_Z).
+  leg_connection_z: -10
+  # Angle between servo horn and leg segment with the servo centred, degrees.
+  coxa_attach_angle: -8
+  femur_attach_angle: 35
+  tibia_attach_angle: 68
+
+stance:
+  ride_height: 80          # body origin above the feet when standing, mm
+  sit_height: 40           # ditto when sat down (LEG_SITTING_Z)
+  step_lift: 40            # peak foot lift during swing, mm
+  cycle_s: 0.8             # one full gait cycle
+  max_speed: 120           # mm/s of body translation at full stick
+  max_yaw_rate: 45         # deg/s at full stick
+  max_stride: 90           # cap on stance stroke length, mm
+
+# Body frame: +X right, +Y forward, +Z up, origin at the centre of the leg
+# connection plane. `coxa` is the coxa rotation centre; `neutral` is where the
+# foot sits when standing still; `yaw` is the direction the leg points, degrees
+# CCW from +X. Feet sit at z = -ride_height.
+legs:
+  R1: {coxa: [ 63.0,  83.5], yaw:   63.0, neutral: [ 126.2,  207.2]}
+  R2: {coxa: [ 81.5,   0.0], yaw:    0.0, neutral: [ 220.0,    0.0]}
+  R3: {coxa: [ 63.0, -83.5], yaw:  -63.0, neutral: [ 126.2, -207.2]}
+  L1: {coxa: [-63.0,  83.5], yaw:  117.0, neutral: [-126.2,  207.2]}
+  L2: {coxa: [-81.5,   0.0], yaw:  180.0, neutral: [-220.0,    0.0]}
+  L3: {coxa: [-63.0, -83.5], yaw: -117.0, neutral: [-126.2, -207.2]}
+
+# Tripod gait groups. Legs in the same group swing together.
+tripod_groups: [[L1, R2, L3], [R1, L2, R3]]
+
+# [servo name] -> channel + the two calibration pulse widths from Chica's
+# config: microseconds at -45 deg and at +45 deg. Direction is baked into these
+# two numbers; 2000/1000 means positive angle -> shorter pulse.
+# `direction` flips the *joint angle* sign before calibration is applied. Set it
+# during bring-up with `hexapod jog`, one joint at a time.
+servos:
+  L1: {coxa: {channel: 15, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       femur: {channel: 16, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       tibia: {channel: 17, us_neg45: 2000, us_pos45: 1000, direction:  1}}
+  L2: {coxa: {channel:  9, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       femur: {channel: 10, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       tibia: {channel: 11, us_neg45: 2000, us_pos45: 1000, direction:  1}}
+  L3: {coxa: {channel:  3, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       femur: {channel:  4, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       tibia: {channel:  5, us_neg45: 2000, us_pos45: 1000, direction:  1}}
+  R1: {coxa: {channel: 12, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       femur: {channel: 13, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       tibia: {channel: 14, us_neg45: 2000, us_pos45: 1000, direction:  1}}
+  R2: {coxa: {channel:  6, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       femur: {channel:  7, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       tibia: {channel:  8, us_neg45: 2000, us_pos45: 1000, direction:  1}}
+  R3: {coxa: {channel:  0, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       femur: {channel:  1, us_neg45: 2000, us_pos45: 1000, direction:  1},
+       tibia: {channel:  2, us_neg45: 2000, us_pos45: 1000, direction:  1}}
+
+# Foot contact switches. Channels 18..23 are TS1..TS6 on the wire.
+touch_sensors:
+  L1: {channel: 23, active_high: true}
+  L2: {channel: 21, active_high: true}
+  L3: {channel: 19, active_high: true}
+  R1: {channel: 22, active_high: true}
+  R2: {channel: 20, active_high: true}
+  R3: {channel: 18, active_high: true}
+  threshold_v: 1.6         # above this counts as asserted
