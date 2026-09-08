@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .config import JOINTS, Config, Geometry, LegConfig, Limits
 
@@ -50,7 +50,11 @@ class JointAngles:
 
 @dataclass(frozen=True)
 class BodyPose:
-    """Body offset from its neutral pose. Rotations in degrees, applied Z-Y-X."""
+    """Body offset from its neutral pose, in the ground frame. Angles in degrees.
+
+    +X is right and +Y is forward, so pitch (nose up) turns about X and roll
+    (right side down) turns about Y. Composed as Rz(yaw) @ Ry(roll) @ Rx(pitch).
+    """
 
     x: float = 0.0
     y: float = 0.0
@@ -62,16 +66,13 @@ class BodyPose:
     def foot_to_body(self, point: Vec3) -> Vec3:
         """Map a foot position from the ground frame into the (moved) body frame."""
         px, py, pz = point[0] - self.x, point[1] - self.y, point[2] - self.z
-        # Inverse of Rz(yaw) @ Ry(pitch) @ Rx(roll), i.e. transpose applied in reverse.
         cy, sy = _cos_sin(self.yaw)
-        cp, sp = _cos_sin(self.pitch)
         cr, sr = _cos_sin(self.roll)
-        # Rz^T
-        ax, ay, az = cy * px + sy * py, -sy * px + cy * py, pz
-        # Ry^T
-        bx, by, bz = cp * ax - sp * az, ay, sp * ax + cp * az
-        # Rx^T
-        return (bx, cr * by + sr * bz, -sr * by + cr * bz)
+        cp, sp = _cos_sin(self.pitch)
+        # Apply the inverse rotation: Rx^T then Ry^T then Rz^T, reading right to left.
+        ax, ay, az = cy * px + sy * py, -sy * px + cy * py, pz  # Rz^T
+        bx, by, bz = cr * ax - sr * az, ay, sr * ax + cr * az   # Ry^T
+        return (bx, cp * by + sp * bz, -sp * by + cp * bz)      # Rx^T
 
 
 def _cos_sin(deg: float) -> Tuple[float, float]:
@@ -118,14 +119,20 @@ class LegKinematics:
         x, y, z = foot_leg
         coxa = math.degrees(math.atan2(y, x))
 
-        radial = math.hypot(x, y) - g.coxa_len
+        radial = max(0.0, math.hypot(x, y) - g.coxa_len)
         reach = math.hypot(radial, z)
         lo = abs(g.femur_len - g.tibia_len) + 1e-3
         hi = g.femur_len + g.tibia_len - 1e-3
         if reach < lo or reach > hi:
             if strict:
                 raise UnreachableFoot(f"{self.leg.name}: reach {reach:.1f}mm outside [{lo:.1f}, {hi:.1f}]")
-            reach = _clamp(reach, lo, hi)
+            # Slide the target along its own ray onto the workspace annulus, so
+            # radial/z/reach stay a consistent triangle instead of clamping reach
+            # alone and solving for a triangle that does not close.
+            target = _clamp(reach, lo, hi)
+            scale = target / reach if reach > 1e-6 else 0.0
+            radial, z = (radial * scale, z * scale) if scale else (target, 0.0)
+            reach = target
 
         cos_knee = (g.femur_len**2 + g.tibia_len**2 - reach**2) / (2 * g.femur_len * g.tibia_len)
         knee_interior = math.degrees(math.acos(_clamp(cos_knee, -1.0, 1.0)))
@@ -180,19 +187,33 @@ class HexapodKinematics:
         }
         self.order: List[str] = list(config.leg_order)
 
-    def neutral_feet(self, height: float = None) -> Dict[str, Vec3]:
+    def neutral_feet(self, height: Optional[float] = None) -> Dict[str, Vec3]:
         """Standing foot positions in the ground frame."""
         z = -(self.config.stance.ride_height if height is None else height)
         return {name: (leg.neutral_xy[0], leg.neutral_xy[1], z) for name, leg in self.config.legs.items()}
 
     def solve(self, feet: Dict[str, Vec3], pose: BodyPose = BodyPose()) -> Dict[str, JointAngles]:
         """Ground-frame foot targets + body pose -> clamped joint angles per leg."""
+        return self.solve_reporting(feet, pose)[0]
+
+    def solve_reporting(
+        self, feet: Dict[str, Vec3], pose: BodyPose = BodyPose()
+    ) -> Tuple[Dict[str, JointAngles], List[str]]:
+        """As `solve`, plus the names of any legs whose angles had to be clamped.
+
+        A non-empty list means the commanded pose is outside the leg's range and
+        the robot is not standing where you asked it to. Worth surfacing.
+        """
         out: Dict[str, JointAngles] = {}
+        limited: List[str] = []
         for name, target in feet.items():
             leg = self.legs[name]
-            in_body = pose.foot_to_body(target)
-            out[name] = leg.clamp_angles(leg.ik(leg.body_to_leg(in_body)))
-        return out
+            raw = leg.ik(leg.body_to_leg(pose.foot_to_body(target)))
+            clamped = leg.clamp_angles(raw)
+            if any(abs(a - b) > 1e-6 for a, b in zip(raw.as_tuple(), clamped.as_tuple())):
+                limited.append(name)
+            out[name] = clamped
+        return out, limited
 
     def pulse_frame(self, angles: Dict[str, JointAngles]) -> List[int]:
         """Joint angles -> the 18 pulse widths, indexed by servo channel 0..17."""

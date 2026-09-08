@@ -63,6 +63,7 @@ class Stance:
     max_speed: float
     max_yaw_rate: float
     max_stride: float
+    min_foot_depth: float
 
 
 @dataclass(frozen=True)

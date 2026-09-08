@@ -22,9 +22,9 @@ control:
 
 limits:
   pulse_us: [700, 2300]    # hard clamp on anything sent to a servo channel
-  coxa_deg: [-45, 45]
-  femur_deg: [-60, 75]
-  tibia_deg: [-30, 130]
+  coxa_deg: [-50, 50]
+  femur_deg: [-30, 120]
+  tibia_deg: [30, 165]
 
 geometry:
   # Leg segment lengths, mm (COXA_LEN / FEMUR_LEN / TIBIA_LEN).
@@ -46,6 +46,7 @@ stance:
   max_speed: 120           # mm/s of body translation at full stick
   max_yaw_rate: 45         # deg/s at full stick
   max_stride: 90           # cap on stance stroke length, mm
+  min_foot_depth: 25       # feet stay at least this far below the body plane, mm
 
 # Body frame: +X right, +Y forward, +Z up, origin at the centre of the leg
 # connection plane. `coxa` is the coxa rotation centre; `neutral` is where the
