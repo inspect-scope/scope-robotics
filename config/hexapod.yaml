@@ -21,10 +21,15 @@ control:
   watchdog_ms: 300         # no fresh servo frame for this long -> torque off
 
 limits:
-  pulse_us: [700, 2300]    # hard clamp on anything sent to a servo channel
+  # Hard clamp on anything sent to a servo channel. With Chica's 2000/1000
+  # calibration this is +/-81 deg of servo travel. Most 35kg digital servos take
+  # 500-2500us; narrow this if yours buzz or stall at the ends.
+  pulse_us: [600, 2400]
+  # Joint limits, chosen to sit just inside what pulse_us can actually reach so
+  # the two clamps agree. `hexapod check` flags them if they drift apart.
   coxa_deg: [-50, 50]
-  femur_deg: [-30, 120]
-  tibia_deg: [30, 165]
+  femur_deg: [-35, 115]
+  tibia_deg: [30, 148]
 
 geometry:
   # Leg segment lengths, mm (COXA_LEN / FEMUR_LEN / TIBIA_LEN).

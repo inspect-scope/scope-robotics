@@ -54,7 +54,7 @@ class Geometry:
         return getattr(self, f"{joint}_attach_angle")
 
 
-@dataclass(frozen=True)
+@dataclass  # not frozen: cycle_s / step_lift / max_speed are tunable at runtime
 class Stance:
     ride_height: float
     sit_height: float

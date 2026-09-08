@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "httpx2"]
 
 [project.scripts]
 hexapod = "hexapod.__main__:main"
