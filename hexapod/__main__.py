@@ -78,7 +78,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         "shift": BodyPose(x=shift, y=shift, yaw=yaw),
         "shift-": BodyPose(x=-shift, y=-shift, yaw=-yaw),
     }
-    heights = [config.stance.sit_height, config.stance.ride_height, 105.0]
+    heights = sorted({config.stance.sit_height, 45.0, 50.0, 55.0, 60.0, 65.0,
+                      70.0, 75.0, config.stance.ride_height, 90.0, 105.0})
     travel = {joint: [1e9, -1e9] for joint in JOINTS}
     clamped = {}
     for velocity in commands:
