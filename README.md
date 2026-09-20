@@ -7,7 +7,7 @@ The Servo2040 keeps its existing Chica firmware. Everything above it moves to th
 ```
 browser on the LAN  --wifi-->  Pi  --USB serial-->  Servo2040  -->  18 servos
 joystick, sliders   /          |   --i2c-------->  GY-521 IMU
-320x480 panel   ---            |   --CSI--------->  camera
+480x320 panel   ---            |   --CSI--------->  camera
                         one FastAPI process: IK, gait, state, MJPEG
 ```
 
@@ -17,6 +17,10 @@ both pages (`/` for the operator, `/status` for the panel) are plain HTTP
 clients of it. Do not run `poke.py`, `preflight.py` or anything else that
 touches a device while the server is up; the "device busy" errors look
 intermittent and are not.
+
+Hardware problems hit during bring-up, and what fixed them, are in
+[docs/troubleshooting.md](docs/troubleshooting.md). Check there first when a
+device does not appear, the bus starts failing, or the board will not enumerate.
 
 ## Install
 
