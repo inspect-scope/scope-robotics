@@ -1,0 +1,25 @@
+# Hexapod control server. Installed by deploy/install.sh, which fills in @USER@ and @REPO@.
+#
+# This one process owns the serial port, the i2c bus and the camera. Nothing
+# else on the Pi should open them while it runs; the status panel and the
+# laptop client are plain HTTP clients of it.
+[Unit]
+Description=Hexapod control server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+SupplementaryGroups=dialout i2c video
+WorkingDirectory=@REPO@
+ExecStart=@REPO@/.venv/bin/hexapod serve --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+# Servo torque drops on exit (the board watchdog sees no frames), so a plain kill is safe.
+KillSignal=SIGINT
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="theme-color" content="#0d0d0d">
+<title>Hexapod status</title>
+<style>
+:root {
+  color-scheme: dark;
+  --plane: #0d0d0d; --surface: #1a1a19; --grid: #2c2c2a; --baseline: #383835;
+  --ink: #ffffff; --ink-2: #c3c2b7; --muted: #898781;
+  --accent: #3987e5; --sky: #1e4f8a; --ground: #5a3a1c;
+  --good: #0ca30c; --warning: #fab219; --critical: #d03b3b;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; margin: 0; overflow: hidden; }
+body {
+  background: var(--plane); color: var(--ink); cursor: none; user-select: none;
+  font: 15px/1.3 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto auto auto 1fr auto auto;
+  gap: 8px; padding: 10px 12px 12px;
+}
+body > * { min-width: 0; }
+.num { font-variant-numeric: tabular-nums; }
+
+header { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--good); } .dot.bad { background: var(--critical); } .dot.warn { background: var(--warning); }
+#state { margin-left: auto; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--ink); }
+#state.estop { color: var(--critical); } #state.walking { color: var(--accent); } #state.standing { color: var(--good); }
+
+.volts { text-align: center; padding: 2px 0 0; }
+.volts .big { font-size: 78px; font-weight: 700; line-height: 1; letter-spacing: -1px; }
+.volts .big .unit { font-size: 28px; font-weight: 500; color: var(--ink-2); margin-left: 4px; }
+.volts .sub { font-size: 14px; color: var(--muted); margin-top: 2px; }
+.volts.low .big { color: var(--warning); } .volts.dead .big { color: var(--critical); }
+
+.row { display: grid; grid-template-columns: minmax(0, 104px) minmax(0, 1fr); gap: 8px; }
+.tile { background: var(--surface); border: 1px solid var(--grid); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+.tile .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.tile .value { font-size: 24px; font-weight: 600; line-height: 1.15; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .value .unit { font-size: 13px; color: var(--ink-2); margin-left: 2px; }
+.tile.ip .value { font-size: 17px; font-family: ui-monospace, Menlo, monospace; letter-spacing: -.2px; }
+
+.horizon { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 0; }
+.horizon svg { height: 100%; max-height: 150px; width: auto; }
+.pr { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+.pr b { display: block; font-size: 22px; color: var(--ink); font-weight: 600; }
+
+#err { font-size: 12px; color: var(--warning); min-height: 15px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#stop {
+  font: inherit; font-size: 26px; font-weight: 800; letter-spacing: 2px;
+  color: #fff; background: var(--critical); border: 0; border-radius: 12px; height: 74px; width: 100%;
+}
+#stop:active { filter: brightness(.8); }
+#stop.latched { background: var(--surface); color: var(--critical); border: 2px solid var(--critical); }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot" id="link"></span><span id="link-text">connecting</span>
+  <span id="state">--</span>
+</header>
+
+<div class="volts" id="volts-box">
+  <div class="big num"><span id="volts">--.--</span><span class="unit">V</span></div>
+  <div class="sub" id="volts-note">no telemetry</div>
+</div>
+
+<div class="row">
+  <div class="tile">
+    <div class="label">Current</div>
+    <div class="value num"><span id="amps">--</span><span class="unit">A</span></div>
+  </div>
+  <div class="tile ip">
+    <div class="label">Address</div>
+    <div class="value" id="ip">--</div>
+  </div>
+</div>
+
+<div class="horizon">
+  <svg viewBox="-100 -100 200 200" aria-label="Attitude">
+    <defs><clipPath id="disc"><circle r="90"/></clipPath></defs>
+    <g clip-path="url(#disc)">
+      <g id="att">
+        <rect x="-300" y="-600" width="600" height="600" fill="var(--sky)"/>
+        <rect x="-300" y="0" width="600" height="600" fill="var(--ground)"/>
+        <line x1="-300" y1="0" x2="300" y2="0" stroke="#fff" stroke-width="2"/>
+        <g stroke="rgba(255,255,255,.55)" stroke-width="1.5" id="ladder"></g>
+      </g>
+    </g>
+    <circle r="90" fill="none" stroke="var(--baseline)" stroke-width="2"/>
+    <path d="M-40 0 H-12 M12 0 H40" stroke="var(--warning)" stroke-width="4" stroke-linecap="round"/>
+    <circle r="3.5" fill="var(--warning)"/>
+    <polygon points="0,-90 -6,-78 6,-78" fill="var(--ink-2)"/>
+  </svg>
+  <div class="pr">
+    <span>Pitch<b class="num" id="pitch">--</b></span>
+    <span>Roll<b class="num" id="roll">--</b></span>
+  </div>
+</div>
+
+<div id="err"></div>
+<button id="stop">STOP</button>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const fmt = (v, d) => (v === null || v === undefined) ? "--" : v.toFixed(d);
+const PX_PER_DEG = 2.2;
+
+// Pitch ladder: a tick every 10 degrees.
+for (let d = -60; d <= 60; d += 10) {
+  if (d === 0) continue;
+  const y = -d * PX_PER_DEG, w = d % 20 === 0 ? 24 : 12;
+  $("ladder").insertAdjacentHTML("beforeend", `<line x1="${-w}" y1="${y}" x2="${w}" y2="${y}"/>`);
+}
+
+function setLink(up) {
+  linked = up;
+  $("link").className = "dot " + (up ? "ok" : "bad");
+  $("link-text").textContent = up ? "link" : "no link";
+}
+
+let sock, linked = false, lastMessage = 0;
+function connect() {
+  sock = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/telemetry");
+  sock.onopen = () => setLink(true);
+  sock.onclose = () => { setLink(false); setTimeout(connect, 1000); };
+  sock.onerror = () => sock.close();
+  sock.onmessage = (ev) => { lastMessage = Date.now(); if (!linked) setLink(true); render(JSON.parse(ev.data)); };
+}
+// A socket that is open but silent is as bad as a closed one.
+setInterval(() => { if (linked && lastMessage && Date.now() - lastMessage > 3000) setLink(false); }, 1000);
+
+function render(s) {
+  const v = s.volts, box = $("volts-box");
+  $("volts").textContent = fmt(v, 2);
+  box.className = "volts" + (v === null ? "" : v < 6.0 ? " dead" : v < 6.4 ? " low" : "");
+  $("volts-note").textContent =
+    v === null ? "no telemetry" : v < 6.0 ? "battery flat, shut down" : v < 6.4 ? "battery low" :
+    s.telemetry_age_s > 2 ? `telemetry ${s.telemetry_age_s.toFixed(0)} s old` : "battery";
+
+  $("amps").textContent = fmt(s.amps, 2);
+  $("ip").textContent = s.ip || "no network";
+
+  $("state").textContent = s.state;
+  $("state").className = s.state;
+  $("stop").classList.toggle("latched", s.estopped);
+  $("stop").textContent = s.estopped ? "STOPPED" : "STOP";
+
+  const imu = s.imu || {};
+  const pitch = imu.pitch ?? 0, roll = imu.roll ?? 0;
+  $("att").setAttribute("transform", `translate(0 ${pitch * PX_PER_DEG}) rotate(${-roll})`);
+  $("att").style.opacity = imu.ok ? 1 : 0.35;
+  $("pitch").textContent = imu.ok ? `${pitch.toFixed(1)}°` : imu.calibrating ? "cal…" : "--";
+  $("roll").textContent = imu.ok ? `${roll.toFixed(1)}°` : "--";
+
+  const problems = [];
+  if (!s.connected) problems.push(s.error ? `board: ${s.error}` : "board offline");
+  if (!imu.ok && !imu.calibrating && imu.error) problems.push(`imu: ${imu.error}`);
+  else if (imu.read_errors) problems.push(`imu: ${imu.read_errors} bus errors, check leads`);
+  if (s.camera && !s.camera.ok) problems.push(`camera: ${s.camera.error || "off"}`);
+  $("err").textContent = problems.join(" · ");
+  $("err").title = $("err").textContent;
+}
+
+$("stop").addEventListener("pointerdown", () => {
+  fetch("/stop", { method: "POST" }).catch(() => {});
+  if (sock && sock.readyState === 1) sock.send("stop");
+});
+
+connect();
+</script>
+</body>
+</html>

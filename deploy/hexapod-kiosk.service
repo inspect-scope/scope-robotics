@@ -1,0 +1,14 @@
+# Chromium in kiosk mode on the 320x480 panel, pointed at the status page.
+# A *user* unit: install to ~/.config/systemd/user/ (deploy/install.sh does this).
+[Unit]
+Description=Hexapod status panel (Chromium kiosk)
+After=hexapod.service graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@REPO@/deploy/kiosk.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

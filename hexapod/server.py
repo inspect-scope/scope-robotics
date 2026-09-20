@@ -1,9 +1,13 @@
 """HTTP + WebSocket interface, served on the local network.
 
-The websocket carries control in one direction and state in the other. It is
-deliberately the only stateful path: every message is a complete command, so a
-dropped connection needs no resync, and the controller stops on its own once the
-web source's commands go stale.
+Two websockets. `/ws` carries commands in and state out for the client page; it
+is the only stateful path, every message is a complete command, and the
+controller expires the web source's velocity 0.5 s after the last one, so a
+dropped link stops the robot on its own. `/telemetry` is state only, for the
+status panel and anything else that just watches.
+
+`/move` and `/stop` do the same over plain HTTP for scripts and other clients.
+A `/move` command has the same 0.5 s lifetime: keep posting or the robot halts.
 """
 
 from __future__ import annotations
@@ -13,20 +17,47 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
+from .camera import Camera, CameraError
 from .config import Config
-from .controller import POSE_LIMITS, Controller
+from .controller import COMMAND_TTL, POSE_LIMITS, Controller
 from .gait import Velocity
+from .state import RobotState
 
 log = logging.getLogger(__name__)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 WEB_SOURCE = "web"
+REST_SOURCE = "rest"
 WEB_PRIORITY = 10
 STATE_HZ = 10.0
+STREAM_BOUNDARY = b"frame"
+
+# `/move` directions as normalised (vx, vy, yaw) axes in the body frame.
+DIRECTIONS: Dict[str, tuple] = {
+    "forward": (0.0, 1.0, 0.0),
+    "back": (0.0, -1.0, 0.0),
+    "backward": (0.0, -1.0, 0.0),
+    "left": (-1.0, 0.0, 0.0),
+    "right": (1.0, 0.0, 0.0),
+    "turn_left": (0.0, 0.0, 1.0),
+    "turn_right": (0.0, 0.0, -1.0),
+    "stop": (0.0, 0.0, 0.0),
+}
+
+
+class MoveRequest(BaseModel):
+    """Either a named direction with a speed, or raw -1..1 axes."""
+
+    direction: Optional[str] = None
+    speed: float = 1.0
+    vx: Optional[float] = None
+    vy: Optional[float] = None
+    yaw: Optional[float] = None
 
 
 def _clamp_axis(value: Any) -> float:
@@ -37,17 +68,40 @@ def _clamp_axis(value: Any) -> float:
     return max(-1.0, min(1.0, number))
 
 
-def create_app(controller: Controller, config: Config) -> FastAPI:
+def _velocity_from(move: MoveRequest) -> Velocity:
+    if move.direction is not None:
+        try:
+            vx, vy, yaw = DIRECTIONS[move.direction.lower()]
+        except KeyError:
+            raise HTTPException(400, f"unknown direction {move.direction!r}; one of {', '.join(DIRECTIONS)}")
+        speed = max(0.0, min(1.0, float(move.speed)))
+        return Velocity(vx=vx * speed, vy=vy * speed, yaw_rate=yaw * speed)
+    if move.vx is None and move.vy is None and move.yaw is None:
+        raise HTTPException(400, "give a direction or at least one of vx, vy, yaw")
+    return Velocity(vx=_clamp_axis(move.vx), vy=_clamp_axis(move.vy), yaw_rate=_clamp_axis(move.yaw))
+
+
+def create_app(state: RobotState, config: Config) -> FastAPI:
+    controller = state.controller
     app = FastAPI(title="scope-hexapod", docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    last_move: Dict[str, Any] = {"text": None}
+
+    # --- pages ------------------------------------------------------------------
 
     @app.get("/")
     async def index() -> FileResponse:
         return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
+    @app.get("/status")
+    async def status_page() -> FileResponse:
+        return FileResponse(os.path.join(STATIC_DIR, "status.html"))
+
+    # --- state --------------------------------------------------------------------
+
     @app.get("/api/state")
-    async def state() -> JSONResponse:
-        return JSONResponse(controller.snapshot().__dict__)
+    async def api_state() -> JSONResponse:
+        return JSONResponse(state.snapshot())
 
     @app.get("/api/config")
     async def config_view() -> JSONResponse:
@@ -59,21 +113,80 @@ def create_app(controller: Controller, config: Config) -> FastAPI:
                 "gait": {"cycle_s": s.cycle_s, "step_lift": s.step_lift, "max_speed": s.max_speed},
                 "legs": list(config.leg_order),
                 "coxae": {name: list(leg.coxa_xy) for name, leg in config.legs.items()},
+                "camera": {"enabled": state.camera is not None, "lores": list(config.camera.lores),
+                           "still": list(config.camera.still)},
             }
         )
 
+    # --- motion -------------------------------------------------------------------
+
+    @app.post("/stop")
     @app.post("/api/estop")
-    async def estop() -> JSONResponse:
-        """Reachable without the websocket, so a wedged UI is never the only way to stop."""
+    async def stop() -> JSONResponse:
+        """Latches torque off and clears every velocity source. Reachable without a
+        websocket, so a wedged page is never the only way to stop."""
         controller.estop()
+        log.warning("stop requested over http")
         return JSONResponse({"ok": True, "state": controller.snapshot().state})
+
+    @app.post("/move")
+    async def move(request: MoveRequest) -> JSONResponse:
+        velocity = _velocity_from(request)
+        controller.command(REST_SOURCE, velocity, priority=WEB_PRIORITY)
+        snapshot = controller.snapshot()
+        text = f"{request.direction or 'axes'} vx={velocity.vx:+.2f} vy={velocity.vy:+.2f} yaw={velocity.yaw_rate:+.2f}"
+        if text != last_move["text"]:
+            log.info("move %s (robot %s)", text, snapshot.state)
+            last_move["text"] = text
+        return JSONResponse(
+            {
+                "ok": True,
+                "velocity": {"vx": velocity.vx, "vy": velocity.vy, "yaw": velocity.yaw_rate},
+                "expires_in_s": COMMAND_TTL,
+                "state": snapshot.state,
+                "moving": snapshot.state == "standing" or snapshot.state == "walking",
+            }
+        )
+
+    # --- camera -------------------------------------------------------------------
+
+    def _camera() -> Camera:
+        camera = state.camera
+        if camera is None or not camera.ok:
+            raise HTTPException(503, (camera.error if camera else None) or "camera not available")
+        return camera
+
+    @app.get("/stream")
+    async def stream() -> StreamingResponse:
+        camera = _camera()
+        return StreamingResponse(
+            _mjpeg(camera),
+            media_type=f"multipart/x-mixed-replace; boundary={STREAM_BOUNDARY.decode()}",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+        )
+
+    @app.post("/capture")
+    async def capture() -> JSONResponse:
+        camera = _camera()
+        metadata = state.snapshot()
+        loop = asyncio.get_running_loop()
+        try:
+            path = await loop.run_in_executor(None, camera.capture, metadata)
+        except CameraError as exc:
+            raise HTTPException(503, str(exc))
+        except Exception as exc:
+            log.exception("capture failed")
+            raise HTTPException(500, f"capture failed: {type(exc).__name__}: {exc}")
+        return JSONResponse({"ok": True, "path": path, "bytes": os.path.getsize(path), "captures": camera.captures})
+
+    # --- websockets ---------------------------------------------------------------
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket) -> None:
         await socket.accept()
         peer = socket.client.host if socket.client else "?"
         log.info("client connected: %s", peer)
-        pusher = asyncio.create_task(_push_state(socket, controller))
+        pusher = asyncio.create_task(_push_state(socket, state))
         try:
             while True:
                 message = await socket.receive_json()
@@ -87,19 +200,50 @@ def create_app(controller: Controller, config: Config) -> FastAPI:
             # Let the command expire rather than stopping hard: a phone that drops
             # off wifi mid-stride should coast to a halt, not drop on its face.
             controller.drop_source(WEB_SOURCE)
+
+    @app.websocket("/telemetry")
+    async def telemetry(socket: WebSocket) -> None:
+        """State only. Incoming messages are read and dropped so a close is noticed."""
+        await socket.accept()
+        pusher = asyncio.create_task(_push_state(socket, state))
+        try:
+            while True:
+                await socket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            log.debug("telemetry socket closed", exc_info=True)
+        finally:
+            pusher.cancel()
+
     return app
 
 
-async def _push_state(socket: WebSocket, controller: Controller) -> None:
+async def _push_state(socket: WebSocket, state: RobotState) -> None:
     period = 1.0 / STATE_HZ
     try:
         while True:
-            await socket.send_json({"type": "state", **controller.snapshot().__dict__})
+            await socket.send_json({"type": "state", **state.snapshot()})
             await asyncio.sleep(period)
     except asyncio.CancelledError:
         raise
     except Exception:
         log.debug("state push stopped", exc_info=True)
+
+
+async def _mjpeg(camera: Camera):
+    """multipart/x-mixed-replace body: one JPEG per part, forever."""
+    loop = asyncio.get_running_loop()
+    seq = 0
+    while True:
+        got = await loop.run_in_executor(None, camera.frames.wait, seq, 1.0)
+        if got is None:
+            if not camera.ok:
+                return
+            continue
+        seq, frame = got
+        yield (b"--" + STREAM_BOUNDARY + b"\r\nContent-Type: image/jpeg\r\nContent-Length: "
+               + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
 
 
 def _handle(controller: Controller, config: Config, message: Dict[str, Any]) -> None:

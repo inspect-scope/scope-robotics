@@ -15,6 +15,7 @@ from .config import JOINTS, Config
 from .controller import POSE_LIMITS, Controller
 from .gait import TripodGait, Velocity
 from .kinematics import BodyPose, HexapodKinematics
+from .net import interface_addresses, is_tunnel
 
 
 def _board(config: Config, args: argparse.Namespace) -> Servo2040:
@@ -237,93 +238,59 @@ def cmd_telemetry(args: argparse.Namespace) -> int:
 def cmd_serve(args: argparse.Namespace) -> int:
     import uvicorn
 
+    from .camera import Camera, FakeCamera
+    from .imu import FakeImu, Imu
     from .server import create_app
+    from .state import RobotState
 
     config = _load(args)
     board = _board(config, args)
     board.open()
     controller = Controller(config, board)
     controller.start()
-    app = create_app(controller, config)
+
+    # This process owns every device. The state object opens the sensors itself so
+    # a missing one shows up on the status page instead of stopping the server.
+    imu = None
+    if config.imu.enabled and not args.no_imu:
+        imu = (FakeImu if args.dry_run else Imu)(config.imu)
+    camera = None
+    if config.camera.enabled and not args.no_camera:
+        camera = (FakeCamera if args.dry_run else Camera)(config.camera)
+    state = RobotState(config, controller, imu=imu, camera=camera)
+    state.start()
+    app = create_app(state, config)
 
     print(f"\n  {'dry run, no serial port' if args.dry_run else 'board on ' + config.port}")
+    imu_note = "off" if imu is None else "fake" if args.dry_run else f"i2c-{config.imu.bus} {config.imu.address:#04x}"
+    camera_note = "off" if camera is None else "fake" if args.dry_run else (
+        f"{config.camera.lores[0]}x{config.camera.lores[1]} live, "
+        f"{config.camera.still[0]}x{config.camera.still[1]} stills")
+    print(f"  imu {imu_note}; camera {camera_note}")
     _print_urls(args.port)
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", ws_ping_interval=5)
     finally:
+        state.stop()
         controller.stop()
         board.close()
     return 0
 
 
-# Interfaces that are never the LAN the robot is on. A VPN usually owns the
-# default route, so following the route to the internet finds the tunnel, not
-# the network your laptop is actually on.
-_TUNNEL_PREFIXES = ("utun", "tun", "tap", "wg", "ppp", "tailscale", "zt",
-                    "docker", "br-", "veth", "virbr", "awdl", "llw", "bridge")
-_PHYSICAL_PREFIXES = ("en", "eth", "wlan", "wl", "wlp", "enp", "eno")
-
-
-def _interface_addresses() -> List[tuple]:
-    """(interface, ipv4) for every configured interface, most likely LAN first."""
-    import subprocess
-
-    found = []
-    try:
-        if sys.platform.startswith("linux"):
-            output = subprocess.run(
-                ["ip", "-4", "-o", "addr", "show", "scope", "global"],
-                capture_output=True, text=True, timeout=2, check=False,
-            ).stdout
-            for line in output.splitlines():
-                parts = line.split()
-                if len(parts) >= 4 and parts[2] == "inet":
-                    found.append((parts[1], parts[3].split("/")[0]))
-        else:
-            output = subprocess.run(["ifconfig"], capture_output=True, text=True, timeout=2, check=False).stdout
-            interface = ""
-            for line in output.splitlines():
-                if line and not line[0].isspace():
-                    interface = line.split(":")[0]
-                    continue
-                parts = line.split()
-                if len(parts) >= 2 and parts[0] == "inet":
-                    found.append((interface, parts[1]))
-    except (OSError, subprocess.SubprocessError):
-        return []
-
-    usable = [
-        (name, address)
-        for name, address in found
-        if not address.startswith(("127.", "169.254."))
-    ]
-
-    def rank(entry) -> int:
-        name = entry[0]
-        if name.startswith(_TUNNEL_PREFIXES):
-            return 2
-        if name.startswith(_PHYSICAL_PREFIXES):
-            return 0
-        return 1
-
-    return sorted(usable, key=rank)
-
-
 def _print_urls(port: int) -> None:
-    """List every address the page is reachable at, best guess first."""
-    addresses = _interface_addresses()
+    """List every address the pages are reachable at, best guess first."""
+    addresses = interface_addresses()
     if not addresses:
-        print(f"\n  hexapod control on http://localhost:{port}\n", flush=True)
+        print(f"\n  hexapod control on http://localhost:{port}  (status panel at /status)\n", flush=True)
         return
-    rows = [(f"http://{address}:{port}", name,
-             "VPN or virtual, probably not your LAN" if name.startswith(_TUNNEL_PREFIXES) else "")
+    rows = [(f"http://{address}:{port}", name, "VPN or virtual, probably not your LAN" if is_tunnel(name) else "")
             for name, address in addresses]
     rows.append((f"http://localhost:{port}", "", "this machine only"))
     width = max(len(url) for url, _, _ in rows)
     print("\n  hexapod control on:")
     for url, name, note in rows:
         print(f"    {url:<{width}}  {name:<8} {note}".rstrip())
-    print(flush=True)
+    print(f"  status panel at /status on any of them", flush=True)
 
 
 # --- argument parsing -------------------------------------------------------------
@@ -349,7 +316,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     serve = subparsers.add_parser("serve", help="run the web interface")
     serve.add_argument("--host", default="0.0.0.0", help="bind address")
-    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--port", type=int, default=8000)
+    serve.add_argument("--no-camera", action="store_true", help="do not open the camera")
+    serve.add_argument("--no-imu", action="store_true", help="do not open the IMU")
     serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)

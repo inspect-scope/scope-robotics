@@ -83,7 +83,19 @@ button.on { background: var(--accent); border-color: var(--accent); }
 /* --- main --- */
 main { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 12px 14px 16px; min-height: 0; overflow-y: auto; }
 .row { display: flex; gap: 10px; flex-wrap: wrap; }
-.stage { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; min-height: 210px; }
+.visuals { display: flex; gap: 12px; flex-wrap: wrap; align-items: stretch; }
+.view { flex: 1 1 320px; min-width: 0; position: relative; background: var(--surface); border: 1px solid var(--grid);
+  border-radius: var(--radius); overflow: hidden; aspect-ratio: 16 / 9; max-height: 400px; display: flex; align-items: center; justify-content: center; }
+.view img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.view img:not([src]) { display: none; }
+.view .nocam { position: absolute; color: var(--muted); font-size: 13px; }
+.view .bar { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; gap: 8px; align-items: center; }
+.view .bar .cap:empty { display: none; }
+.view .bar .cap { font-size: 12px; color: var(--ink-2); background: rgba(13,13,13,.7); padding: 4px 8px; border-radius: 6px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#capture { background: var(--accent); border-color: var(--accent); font-weight: 600; }
+#capture.busy { opacity: .6; }
+.stage { flex: 1 1 260px; display: flex; align-items: center; justify-content: center; min-height: 210px; }
 .stage svg { height: 100%; width: auto; max-width: 100%; max-height: 340px; }
 .pads { display: flex; gap: 24px; justify-content: space-between; align-items: center; }
 .pad-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
@@ -151,6 +163,11 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     <div class="note"><span id="tele-age">telemetry --</span></div>
   </div>
   <div class="tile">
+    <div class="label">Attitude</div>
+    <div class="value"><span id="pitch">--</span><span class="unit">pitch</span> <span id="roll">--</span><span class="unit">roll</span></div>
+    <div class="note"><span class="icon" id="imu-icon"></span><span id="imu-state">no data</span></div>
+  </div>
+  <div class="tile">
     <div class="label">State</div>
     <div class="value"><span class="badge"><span class="icon" id="state-icon"></span><span id="state">--</span></span></div>
     <div class="note"><span id="speed">0 mm/s &middot; 0 &deg;/s</span></div>
@@ -167,8 +184,18 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     <button id="clear" style="margin-left:auto">Clear e-stop</button>
   </div>
 
-  <div class="stage">
-    <svg id="stance" viewBox="-300 -300 600 600" aria-label="Top-down view of foot positions"></svg>
+  <div class="visuals">
+    <div class="view" id="view">
+      <span class="nocam" id="nocam">no camera</span>
+      <img id="live" alt="live view">
+      <div class="bar">
+        <button id="capture" title="C">Capture</button>
+        <span class="cap" id="capture-note"></span>
+      </div>
+    </div>
+    <div class="stage">
+      <svg id="stance" viewBox="-300 -300 600 600" aria-label="Top-down view of foot positions"></svg>
+    </div>
   </div>
 
   <div class="pads">
@@ -254,6 +281,7 @@ const KEYS = { w: "vy+", s: "vy-", d: "vx+", a: "vx-", q: "yaw+", e: "yaw-" };
 addEventListener("keydown", (ev) => {
   const key = ev.key.toLowerCase();
   if (key === " ") { ev.preventDefault(); return estop(); }
+  if (key === "c" && !ev.repeat) { ev.preventDefault(); return capture(); }
   if (KEYS[key]) { held.add(key); ev.preventDefault(); applyKeys(); }
 });
 addEventListener("keyup", (ev) => {
@@ -280,6 +308,35 @@ $("clear").onclick = () => send({ type: "clear_estop" });
 $("stand").onclick = () => send({ type: "stand" });
 $("sit").onclick = () => send({ type: "sit" });
 $("torque").onclick = () => send({ type: "torque", on: !$("torque").classList.contains("on") });
+
+/* ---------------- camera ---------------- */
+// The <img> holds one long-lived HTTP connection to /stream. Set src once when the
+// camera comes up and drop it when the camera goes away, so a dead camera is a
+// message, not a broken-image icon.
+let liveOn = false;
+function setLive(on) {
+  if (on === liveOn) return;
+  liveOn = on;
+  if (on) $("live").src = "/stream?" + Date.now(); else $("live").removeAttribute("src");
+  $("nocam").style.display = on ? "none" : "";
+  $("capture").disabled = !on;
+}
+$("live").onerror = () => { if (liveOn) { liveOn = false; setTimeout(() => setLive(true), 2000); } };
+async function capture() {
+  const button = $("capture");
+  if (button.disabled || button.classList.contains("busy")) return;
+  button.classList.add("busy");
+  try {
+    const r = await fetch("/capture", { method: "POST" });
+    const body = await r.json();
+    $("capture-note").textContent = r.ok ? `saved ${body.path.split("/").pop()} (${(body.bytes / 1e6).toFixed(1)} MB)` : `capture failed: ${body.detail}`;
+  } catch (e) {
+    $("capture-note").textContent = "capture failed: no reply";
+  } finally {
+    button.classList.remove("busy");
+  }
+}
+$("capture").onclick = capture;
 
 /* ---------------- sliders ---------------- */
 const SLIDERS = [
@@ -441,6 +498,16 @@ function render(s) {
   $("speed").textContent = `${speed.toFixed(0)} mm/s · ${s.velocity.yaw_rate.toFixed(0)} °/s`;
   $("tele-age").textContent = s.telemetry_age_s < 0 ? "telemetry --" : `telemetry ${s.telemetry_age_s.toFixed(1)} s ago`;
 
+  const imu = s.imu || {};
+  $("pitch").textContent = imu.ok ? `${imu.pitch.toFixed(1)}°` : "--";
+  $("roll").textContent = imu.ok ? `${imu.roll.toFixed(1)}°` : "--";
+  $("imu-icon").style.background = `var(${imu.ok ? "--good" : imu.calibrating ? "--warning" : "--muted"})`;
+  $("imu-state").textContent = (imu.ok ? `gyro ${(imu.gyro || []).map((g) => g.toFixed(0)).join(" ")} °/s`
+    : imu.calibrating ? "calibrating, hold still" : imu.error ? "offline" : "no data")
+    + (imu.read_errors ? ` · ${imu.read_errors} bus errors` : "");
+  setLive(!!(s.camera && s.camera.ok));
+  if (s.camera && !s.camera.ok) $("nocam").textContent = s.camera.error ? `camera: ${s.camera.error}` : "no camera";
+
   $("torque").classList.toggle("on", s.torque);
   $("estop").classList.toggle("latched", s.estopped);
   $("clear").disabled = !s.estopped;
@@ -457,6 +524,7 @@ function render(s) {
   if (!s.connected) problems.push(s.error ? `board offline: ${s.error}` : "board offline");
   if (s.limited_legs?.length) problems.push(`pose limited on ${s.limited_legs.join(", ")}`);
   if (s.estopped) problems.push("e-stop latched, clear it before standing");
+  if (imu.error && !imu.ok && !imu.calibrating) problems.push(`imu: ${imu.error}`);
   drawStance(s);
   $("banner").classList.toggle("show", problems.length > 0);
   $("banner-text").textContent = problems.join(" · ");

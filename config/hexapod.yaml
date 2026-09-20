@@ -102,3 +102,27 @@ touch_sensors:
   R2: {channel: 20, active_high: true}
   R3: {channel: 18, active_high: true}
   threshold_v: 1.6         # above this counts as asserted
+
+# GY-521 (MPU-6050) on the Pi's i2c bus. Wiring and checks are in the README.
+# axis_map turns the chip's axes into the body frame (+X right, +Y forward,
+# +Z up): each entry is the chip axis pointing along that body axis, with an
+# optional minus sign. Set it once the board is bolted down, checking that the
+# horizon on /status tilts the same way the robot does.
+imu:
+  enabled: true
+  bus: 1
+  address: 0x68            # 0x69 if AD0 is pulled high
+  bias_seconds: 2.0        # gyro bias average at startup; the robot must be still
+  axis_map: [x, y, z]
+  smoothing: 0.3           # weight of each new tilt sample, 1 = no smoothing
+
+# Pi camera through Picamera2. Both streams run at once, so a still never
+# interrupts the live view. `still` is the sensor's full frame (Camera Module 3).
+camera:
+  enabled: true
+  lores: [640, 360]        # live view
+  still: [4608, 2592]      # stills
+  stream_fps: 15
+  jpeg_quality: 85         # stills; the stream uses the encoder's default
+  buffers: 2               # full-res frames in flight; each is ~35 MB of CMA
+  survey_dir: ~/surveys    # stills go in survey_dir/<session timestamp>/

@@ -3,6 +3,7 @@
 
     python3 tools/preflight.py                     # check everything
     python3 tools/preflight.py --skip-board        # no Servo2040 attached
+    python3 tools/preflight.py --skip-camera       # no camera fitted
     python3 tools/preflight.py --imu-seconds 10    # longer gyro bias average
 
 Exit code is 0 if nothing failed, 1 otherwise. Warnings do not fail the run.
@@ -227,9 +228,16 @@ def check_imu(bus: int, address: int, seconds: float) -> None:
         gyro_sum = [0.0, 0.0, 0.0]
         temps: List[float] = []
         count = 0
+        failed = 0
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
-            accel, gyro, temp = imu.sample()
+            try:
+                accel, gyro, temp = imu.sample()
+            except OSError:
+                # One NACK is a loose contact, not a dead chip. Keep going and count them.
+                failed += 1
+                time.sleep(0.01)
+                continue
             for i in range(3):
                 accel_sum[i] += accel[i]
                 gyro_sum[i] += gyro[i]
@@ -237,8 +245,17 @@ def check_imu(bus: int, address: int, seconds: float) -> None:
             count += 1
             time.sleep(0.01)
         if not count:
-            report(FAIL, "no samples read")
+            report(FAIL, f"every one of {failed} reads failed after WHO_AM_I answered. The chip drops off the "
+                         f"bus mid-transfer: intermittent contact. Reseat the leads and check the GY-521 "
+                         f"header pins are soldered, not just pushed through")
             return
+        if failed:
+            rate = 100.0 * failed / (failed + count)
+            report(FAIL if rate > 10.0 else WARN,
+                   f"{failed} of {failed + count} reads failed ({rate:.0f}%). Intermittent bus contact: "
+                   f"reseat the leads, check the GY-521 header solder joints, shorten the wires")
+        else:
+            report(PASS, f"{count} reads, none failed")
 
         accel_avg = [v / count for v in accel_sum]
         gyro_avg = [v / count for v in gyro_sum]
@@ -262,8 +279,40 @@ def check_imu(bus: int, address: int, seconds: float) -> None:
         else:
             report(PASS, detail)
         report(WARN, "gyro bias drifts with temperature. Re-measure warm, and after the board is bolted down")
+    except OSError as exc:
+        # 121 is a NACK, 5 is a transfer error. Both mean the same thing in practice:
+        # the bus is fine but this chip did not complete the transaction.
+        hint = (" The chip did not answer. Check VCC, GND, SDA on pin 3 and SCL on pin 5, "
+                "then `i2cdetect -y 1`. A chip at 69 means AD0 is high; use --imu-address 0x69. "
+                "If it answers sometimes, run `python3 tools/i2cwatch.py` to find the loose lead"
+                if exc.errno in (5, 121) else "")
+        report(FAIL, f"i2c error talking to {address:#04x}: {exc}.{hint}")
     finally:
         imu.close()
+
+
+# --- camera ----------------------------------------------------------------------------
+
+
+def check_camera() -> None:
+    """picamera2 is apt-installed, so this mostly checks the venv can see it."""
+    try:
+        from picamera2 import Picamera2
+    except Exception as exc:
+        report(FAIL, f"picamera2 not importable from {sys.executable}: {exc}. "
+                     f"Create the venv with `python3 -m venv --system-site-packages .venv`")
+        return
+    try:
+        cameras = Picamera2.global_camera_info()
+    except Exception as exc:
+        report(FAIL, f"picamera2 cannot list cameras: {exc}")
+        return
+    if not cameras:
+        report(FAIL, "no camera detected. Check the ribbon, then `rpicam-hello --list-cameras`")
+        return
+    for camera in cameras:
+        report(PASS, f"camera {camera.get('Num', '?')}: {camera.get('Model', '?')} ({camera.get('Id', '')})")
+    report(WARN, "the server must be stopped while anything else uses the camera; one process owns it")
 
 
 # --- Servo2040 -----------------------------------------------------------------------
@@ -355,6 +404,7 @@ def main() -> int:
     parser.add_argument("--imu-seconds", type=float, default=3.0,
                         help="how long to average the gyro bias (default 3)")
     parser.add_argument("--skip-imu", action="store_true")
+    parser.add_argument("--skip-camera", action="store_true")
     parser.add_argument("--skip-board", action="store_true")
     args = parser.parse_args()
 
@@ -375,6 +425,12 @@ def main() -> int:
     else:
         print("  hold still, averaging the gyro")
         check_imu(args.imu_bus, args.imu_address, args.imu_seconds)
+
+    section("camera")
+    if args.skip_camera:
+        report(SKIP, "skipped")
+    else:
+        check_camera()
 
     section("servo2040")
     if args.skip_board:

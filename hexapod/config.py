@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import yaml
 
 JOINTS = ("coxa", "femur", "tibia")
+AXES = ("x", "y", "z")
 DEFAULT_CONFIG = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", "hexapod.yaml")
 
 
@@ -78,6 +79,38 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class ImuConfig:
+    """GY-521 / MPU-6050 on the Pi's i2c bus.
+
+    `axis_map` turns the chip's axes into the body frame (+X right, +Y forward,
+    +Z up). Each entry names the chip axis that points along that body axis, with
+    an optional minus sign: ["y", "-x", "z"] means the chip's +y arrow points to
+    the robot's right and its +x arrow points backwards.
+    """
+
+    enabled: bool = True
+    bus: int = 1
+    address: int = 0x68
+    bias_seconds: float = 2.0
+    axis_map: Tuple[str, str, str] = ("x", "y", "z")
+    smoothing: float = 0.3
+
+
+@dataclass(frozen=True)
+class CameraConfig:
+    """Pi camera through Picamera2. Two streams at once: lores for the live
+    view, full resolution for stills, so a capture never interrupts the stream."""
+
+    enabled: bool = True
+    lores: Tuple[int, int] = (640, 360)
+    still: Tuple[int, int] = (4608, 2592)
+    stream_fps: float = 15.0
+    jpeg_quality: int = 85
+    buffers: int = 2
+    survey_dir: str = "~/surveys"
+
+
+@dataclass(frozen=True)
 class Config:
     port: str
     baudrate: int
@@ -93,6 +126,54 @@ class Config:
     touch: Dict[str, TouchCal]
     touch_threshold_v: float
     leg_order: List[str] = field(default_factory=list)
+    imu: ImuConfig = field(default_factory=ImuConfig)
+    camera: CameraConfig = field(default_factory=CameraConfig)
+
+
+def _axis_map(raw: Any) -> Tuple[str, str, str]:
+    entries = tuple(str(v).strip().lower() for v in (raw or AXES))
+    if len(entries) != 3:
+        raise ValueError(f"imu.axis_map needs three entries, got {entries}")
+    letters = []
+    for entry in entries:
+        letter = entry.lstrip("-")
+        if letter not in AXES or entry.count("-") > 1:
+            raise ValueError(f"imu.axis_map entry {entry!r} is not one of x, y, z, -x, -y, -z")
+        letters.append(letter)
+    if sorted(letters) != list(AXES):
+        raise ValueError(f"imu.axis_map must use each of x, y, z once, got {entries}")
+    return entries  # type: ignore[return-value]
+
+
+def _imu(raw: Dict[str, Any]) -> ImuConfig:
+    defaults = ImuConfig()
+    return ImuConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        bus=int(raw.get("bus", defaults.bus)),
+        address=int(raw.get("address", defaults.address)),
+        bias_seconds=float(raw.get("bias_seconds", defaults.bias_seconds)),
+        axis_map=_axis_map(raw.get("axis_map")),
+        smoothing=max(0.0, min(1.0, float(raw.get("smoothing", defaults.smoothing)))),
+    )
+
+
+def _camera(raw: Dict[str, Any]) -> CameraConfig:
+    defaults = CameraConfig()
+    lores = tuple(int(v) for v in raw.get("lores", defaults.lores))
+    still = tuple(int(v) for v in raw.get("still", defaults.still))
+    if len(lores) != 2 or len(still) != 2:
+        raise ValueError("camera.lores and camera.still are [width, height]")
+    if lores[0] > still[0] or lores[1] > still[1]:
+        raise ValueError("camera.lores must not be larger than camera.still")
+    return CameraConfig(
+        enabled=bool(raw.get("enabled", defaults.enabled)),
+        lores=lores,  # type: ignore[arg-type]
+        still=still,  # type: ignore[arg-type]
+        stream_fps=float(raw.get("stream_fps", defaults.stream_fps)),
+        jpeg_quality=int(raw.get("jpeg_quality", defaults.jpeg_quality)),
+        buffers=max(1, int(raw.get("buffers", defaults.buffers))),
+        survey_dir=str(raw.get("survey_dir", defaults.survey_dir)),
+    )
 
 
 def load(path: str = DEFAULT_CONFIG) -> Config:
@@ -152,4 +233,6 @@ def load(path: str = DEFAULT_CONFIG) -> Config:
         touch=touch,
         touch_threshold_v=threshold,
         leg_order=list(raw["legs"].keys()),
+        imu=_imu(dict(raw.get("imu") or {})),
+        camera=_camera(dict(raw.get("camera") or {})),
     )
