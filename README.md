@@ -226,6 +226,15 @@ when the server starts (keep the robot still), and subtracts it from every
 reading. Pitch and roll come from the accelerometer, positive nose up and right
 side down, smoothed by `imu.smoothing`. The state poller reads it at 10 Hz.
 
+**Bus errors are retried.** On this loom about one read in twenty comes back
+`OSError 121`, a NACK, and more once the legs are moving. Each i2c transaction
+gets `imu.bus_retries` extra attempts 2 ms apart, which clears nearly all of
+them; the state poller still rides out a few that get through and reopens the
+chip after five in a row. `/api/state` reports both counts: `imu.read_errors` is
+every bus error seen, `imu.read_failures` only the ones the retries did not
+clear. A rising `read_failures` means a lead, not noise, and is what `/status`
+complains about.
+
 `imu.axis_map` in [config/hexapod.yaml](config/hexapod.yaml) says how the
 chip is mounted. Each entry is the chip axis pointing along the body axis
 (+X right, +Y forward, +Z up), with an optional minus sign. Set it once the

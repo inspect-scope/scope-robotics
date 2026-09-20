@@ -154,6 +154,7 @@ class RobotState:
             "temp_c": None if att["temp_c"] is None else round(att["temp_c"], 1),
             "age_s": round(now - att["updated_at"], 2) if att["updated_at"] else -1.0,
             "read_errors": getattr(self.imu, "read_errors", 0),
+            "read_failures": getattr(self.imu, "read_failures", 0),
             "error": att["error"] if self.imu is not None else "no imu configured",
         }
         camera = self.camera

@@ -94,6 +94,7 @@ class ImuConfig:
     bias_seconds: float = 2.0
     axis_map: Tuple[str, str, str] = ("x", "y", "z")
     smoothing: float = 0.3
+    bus_retries: int = 2  # extra attempts after a NACK, per transaction
 
 
 @dataclass(frozen=True)
@@ -154,6 +155,7 @@ def _imu(raw: Dict[str, Any]) -> ImuConfig:
         bias_seconds=float(raw.get("bias_seconds", defaults.bias_seconds)),
         axis_map=_axis_map(raw.get("axis_map")),
         smoothing=max(0.0, min(1.0, float(raw.get("smoothing", defaults.smoothing)))),
+        bus_retries=max(0, int(raw.get("bus_retries", defaults.bus_retries))),
     )
 
 

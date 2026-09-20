@@ -504,7 +504,7 @@ function render(s) {
   $("imu-icon").style.background = `var(${imu.ok ? "--good" : imu.calibrating ? "--warning" : "--muted"})`;
   $("imu-state").textContent = (imu.ok ? `gyro ${(imu.gyro || []).map((g) => g.toFixed(0)).join(" ")} °/s`
     : imu.calibrating ? "calibrating, hold still" : imu.error ? "offline" : "no data")
-    + (imu.read_errors ? ` · ${imu.read_errors} bus errors` : "");
+    + (imu.read_errors ? ` · ${imu.read_errors} bus errors, ${imu.read_failures} unrecovered` : "");
   setLive(!!(s.camera && s.camera.ok));
   if (s.camera && !s.camera.ok) $("nocam").textContent = s.camera.error ? `camera: ${s.camera.error}` : "no camera";
 

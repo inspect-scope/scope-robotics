@@ -4,6 +4,10 @@ Talks to the chip with plain ioctl on /dev/i2c-N, the same way tools/preflight.p
 does, so there is nothing to pip install. The gyro bias is averaged at startup
 while the robot is known to be still and subtracted from every reading.
 
+Every transaction is retried. About one read in twenty on this loom comes back
+`OSError 121`, and more once the legs are moving; the next attempt gets it. Only
+an error that survives every attempt reaches the caller.
+
 Frames. Readings come out in the body frame used everywhere else: +X right,
 +Y forward, +Z up. `ImuConfig.axis_map` says how the chip is bolted on. Pitch is
 positive nose up, roll is positive right side down; both come from the
@@ -13,19 +17,21 @@ the legs are moving. The state poller smooths them.
 
 from __future__ import annotations
 
+import errno
 import logging
 import math
 import os
 import struct
 import time
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import Callable, Optional, Sequence, Tuple, TypeVar
 
 from .config import AXES, ImuConfig
 
 log = logging.getLogger(__name__)
 
 Vec3 = Tuple[float, float, float]
+T = TypeVar("T")
 
 I2C_SLAVE = 0x0703
 REG_PWR_MGMT_1 = 0x6B
@@ -38,6 +44,9 @@ ACCEL_LSB_PER_G = 16384.0  # +/-2 g, the default after reset
 GYRO_LSB_PER_DPS = 131.0  # +/-250 deg/s, ditto
 MAX_PLAUSIBLE_BIAS = 20.0  # deg/s; more than this means the robot was moving
 MAX_CALIBRATION_MISSES = 20  # consecutive failed reads before calibration gives up
+EREMOTEIO = 121  # spelled out: errno.EREMOTEIO is Linux only and the tests run on a Mac
+RETRYABLE_ERRNOS = (EREMOTEIO, errno.EIO)  # 121 is a NACK, 5 a transfer error
+RETRY_DELAY_S = 0.002  # let the bus settle; the chip needs no recovery time
 
 
 class ImuError(RuntimeError):
@@ -77,7 +86,8 @@ class Imu:
         self._fd: Optional[int] = None
         self._bias: Vec3 = (0.0, 0.0, 0.0)
         self.bias_at: float = 0.0
-        self.read_errors = 0  # bus errors since open; a rising count means a loose lead
+        self.read_errors = 0  # bus errors since open, including the ones a retry cleared
+        self.read_failures = 0  # the ones retries did not clear; these mean a loose lead
 
     # --- lifecycle ----------------------------------------------------------------
 
@@ -176,21 +186,41 @@ class Imu:
         return accel, gyro, temp / 340.0 + 36.53
 
     def _read(self, register: int, count: int) -> bytes:
-        if self._fd is None:
-            raise ImuError("imu is not open")
-        try:
-            os.write(self._fd, bytes((register,)))
-            data = os.read(self._fd, count)
-        except OSError:
-            self.read_errors += 1
-            raise
-        if len(data) != count:
-            raise ImuError(f"short read from register {register:#04x}: {len(data)} of {count} bytes")
-        return data
+        def once() -> bytes:
+            data = self._bus_read(register, count)
+            if len(data) != count:
+                # A truncated burst is the same kind of fault as a NACK, so retry it too.
+                raise OSError(errno.EIO, f"short read from {register:#04x}: {len(data)} of {count} bytes")
+            return data
+
+        return self._transact(f"read {count} from {register:#04x}", once)
 
     def _write(self, register: int, value: int) -> None:
+        self._transact(f"write {value:#04x} to {register:#04x}", lambda: self._bus_write(register, value))
+
+    def _transact(self, what: str, run: Callable[[], T]) -> T:
+        """One i2c transaction, retried while the error is the kind that clears."""
         if self._fd is None:
             raise ImuError("imu is not open")
+        attempts = 1 + max(0, self.config.bus_retries)
+        for attempt in range(1, attempts + 1):
+            try:
+                return run()
+            except OSError as exc:
+                self.read_errors += 1
+                if attempt == attempts or exc.errno not in RETRYABLE_ERRNOS:
+                    self.read_failures += 1
+                    raise
+                log.debug("i2c %s failed on attempt %d of %d: %s", what, attempt, attempts, exc)
+                time.sleep(RETRY_DELAY_S)
+        raise ImuError(f"i2c {what} fell out of the retry loop")  # attempts >= 1, so unreachable
+
+    def _bus_read(self, register: int, count: int) -> bytes:
+        """The two syscalls: point the chip at a register, then read the burst."""
+        os.write(self._fd, bytes((register,)))
+        return os.read(self._fd, count)
+
+    def _bus_write(self, register: int, value: int) -> None:
         os.write(self._fd, bytes((register, value)))
 
 

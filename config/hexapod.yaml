@@ -115,6 +115,7 @@ imu:
   bias_seconds: 2.0        # gyro bias average at startup; the robot must be still
   axis_map: [x, y, z]
   smoothing: 0.3           # weight of each new tilt sample, 1 = no smoothing
+  bus_retries: 2           # extra attempts per i2c transaction after an Errno 121
 
 # Pi camera through Picamera2. Both streams run at once, so a still never
 # interrupts the live view. `still` is the sensor's full frame (Camera Module 3).

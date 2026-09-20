@@ -1,4 +1,6 @@
+import errno
 import math
+import struct
 
 import pytest
 
@@ -122,3 +124,111 @@ def test_calibration_gives_up_on_a_chip_that_never_answers():
     imu.open()
     with pytest.raises(ImuError):
         imu.calibrate()
+
+
+def nack() -> OSError:
+    return OSError(121, "Remote I/O error")  # EREMOTEIO, what a NACK gives on the Pi
+
+
+class BenchImu(Imu):
+    """A chip whose two syscalls are scripted, so the retry layer is what is tested.
+
+    `faults` holds one entry per read attempt: an OSError to raise, an int to cut
+    the burst short at, or None for a clean read. Attempts past the end succeed.
+    """
+
+    level = struct.pack(">hhhhhhh", 0, 0, 16384, 0, 0, 0, 0)  # flat, still, 36.5 C
+
+    def __init__(self, config, faults=(), write_faults=()):
+        super().__init__(config)
+        self.faults = list(faults)
+        self.write_faults = list(write_faults)
+        self.attempts = 0
+        self.writes = []
+
+    def open(self):
+        self._fd = -1
+
+    def close(self):
+        self._fd = None
+
+    def _bus_read(self, register, count):
+        self.attempts += 1
+        fault = self.faults.pop(0) if self.faults else None
+        if isinstance(fault, BaseException):
+            raise fault
+        if isinstance(fault, int):
+            return self.level[:fault]
+        return self.level[:count]
+
+    def _bus_write(self, register, value):
+        fault = self.write_faults.pop(0) if self.write_faults else None
+        if isinstance(fault, BaseException):
+            raise fault
+        self.writes.append((register, value))
+
+
+def test_a_read_retries_through_errno_121():
+    imu = BenchImu(ImuConfig(bus_retries=2), faults=[nack(), nack()])
+    imu.open()
+    reading = imu.read()
+    assert imu.attempts == 3
+    assert (reading.pitch, reading.roll) == pytest.approx((0.0, 0.0))
+    assert imu.read_errors == 2 and imu.read_failures == 0
+
+
+def test_a_read_gives_up_after_the_configured_retries():
+    imu = BenchImu(ImuConfig(bus_retries=2), faults=[nack() for _ in range(4)])
+    imu.open()
+    with pytest.raises(OSError):
+        imu.read()
+    assert imu.attempts == 3
+    assert imu.read_errors == 3 and imu.read_failures == 1
+
+
+def test_zero_retries_means_one_attempt():
+    imu = BenchImu(ImuConfig(bus_retries=0), faults=[nack()])
+    imu.open()
+    with pytest.raises(OSError):
+        imu.read()
+    assert imu.attempts == 1
+
+
+def test_an_error_that_will_not_clear_is_not_retried():
+    imu = BenchImu(ImuConfig(bus_retries=2), faults=[OSError(errno.ENODEV, "No such device")])
+    imu.open()
+    with pytest.raises(OSError):
+        imu.read()
+    assert imu.attempts == 1 and imu.read_failures == 1
+
+
+def test_a_truncated_burst_is_retried():
+    imu = BenchImu(ImuConfig(bus_retries=2), faults=[6])
+    imu.open()
+    assert imu.read().accel == pytest.approx((0.0, 0.0, 1.0))
+    assert imu.attempts == 2 and imu.read_errors == 1 and imu.read_failures == 0
+
+
+def test_register_writes_are_retried_too():
+    imu = BenchImu(ImuConfig(bus_retries=2), write_faults=[nack()])
+    imu.open()
+    imu._write(0x6B, 0x00)
+    assert imu.writes == [(0x6B, 0x00)]
+    assert imu.read_errors == 1 and imu.read_failures == 0
+
+
+def test_reads_on_a_closed_chip_do_not_touch_the_bus():
+    from hexapod.imu import ImuError
+
+    imu = BenchImu(ImuConfig())
+    with pytest.raises(ImuError):
+        imu.read()
+    assert imu.attempts == 0
+
+
+def test_calibration_rides_out_nacks_the_retries_could_not_clear():
+    # Three NACKs in a row beats bus_retries=1, so the sample is lost, not the average.
+    imu = BenchImu(ImuConfig(bias_seconds=0.05, bus_retries=1), faults=[nack(), nack(), nack()])
+    imu.open()
+    assert imu.calibrate() == pytest.approx((0.0, 0.0, 0.0))
+    assert imu.read_failures == 1

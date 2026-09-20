@@ -161,7 +161,7 @@ function render(s) {
   const problems = [];
   if (!s.connected) problems.push(s.error ? `board: ${s.error}` : "board offline");
   if (!imu.ok && !imu.calibrating && imu.error) problems.push(`imu: ${imu.error}`);
-  else if (imu.read_errors) problems.push(`imu: ${imu.read_errors} bus errors, check leads`);
+  else if (imu.read_failures) problems.push(`imu: ${imu.read_failures} bus errors, check leads`);
   if (s.camera && !s.camera.ok) problems.push(`camera: ${s.camera.error || "off"}`);
   $("err").textContent = problems.join(" · ");
   $("err").title = $("err").textContent;

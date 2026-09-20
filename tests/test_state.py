@@ -119,6 +119,7 @@ def test_flaky_imu_reads_are_ridden_out(stack):
         s = state.snapshot()
         assert s["imu"]["ok"] and s["imu"]["error"] is None
         assert s["imu"]["read_errors"] > 0
+        assert s["imu"]["read_failures"] == 0  # nothing for the status page to complain about
         assert state.imu.is_open  # never closed and reopened
     finally:
         state.stop()
