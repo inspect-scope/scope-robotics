@@ -1,6 +1,8 @@
 import json
+import os
 import threading
 import time
+from datetime import datetime
 
 import pytest
 
@@ -56,6 +58,20 @@ def test_capture_writes_a_still_and_a_sidecar(camera, tmp_path):
     second = camera.capture()
     assert second != path
     assert second.rsplit("/", 1)[0] == path.rsplit("/", 1)[0]
+
+
+def test_two_stills_in_one_millisecond_do_not_collide(camera, monkeypatch):
+    from hexapod import camera as camera_mod
+
+    class Frozen:  # the stamp only has milliseconds, so pin it and take two
+        @staticmethod
+        def now():
+            return datetime(2026, 9, 20, 16, 46, 31, 344000)
+
+    monkeypatch.setattr(camera_mod, "datetime", Frozen)
+    first, second = camera.capture(), camera.capture()
+    assert first != second
+    assert os.path.exists(first) and os.path.exists(second)
 
 
 def test_capture_before_open_fails(tmp_path):

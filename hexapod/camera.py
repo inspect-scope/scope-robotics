@@ -178,9 +178,8 @@ class Camera:
         """Save a full-resolution still. Blocks for about one frame. Returns the path."""
         if not self.ok:
             raise CameraError(self.error or "camera is not open")
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
-        path = os.path.join(self.session_dir(), f"{stamp}.jpg")
         with self._capture_lock:
+            path = self._still_path()
             self._save_still(path)
         if metadata is not None:
             with open(path[:-4] + ".json", "w") as handle:
@@ -188,6 +187,21 @@ class Camera:
         self.captures += 1
         self.last_capture = path
         log.info("captured %s", path)
+        return path
+
+    def _still_path(self) -> str:
+        """A free path in the session directory. Call it holding the capture lock.
+
+        The stamp is millisecond resolution and two captures can land inside one
+        millisecond, which used to mean the second overwrote the first.
+        """
+        directory = self.session_dir()
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+        path = os.path.join(directory, f"{stamp}.jpg")
+        nth = 1
+        while os.path.exists(path):
+            path = os.path.join(directory, f"{stamp}-{nth}.jpg")
+            nth += 1
         return path
 
     def _save_still(self, path: str) -> None:

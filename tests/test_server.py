@@ -163,10 +163,11 @@ def test_websocket_drives_the_robot(client):
         socket.send_json({"type": "stand"})
         assert _wait_for(lambda: client.controller.snapshot().state == "standing")
 
-        for _ in range(20):
+        def driving():
             socket.send_json({"type": "drive", "vx": 0, "vy": 1, "yaw": 0})
-            time.sleep(0.03)
-        assert client.controller.snapshot().velocity["vy"] > 0
+            return client.controller.snapshot().velocity["vy"] > 0
+
+        assert _wait_for(driving)  # the body has to finish rising first
 
         socket.send_json({"type": "pose", "roll": 4})
         socket.send_json({"type": "unknown-to-us"})
