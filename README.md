@@ -254,11 +254,23 @@ the server still starts and the panel says so.
 
 ## Status panel
 
-`/status` is built for the 320x480 screen on the roof: battery voltage large
-enough to read from across the room, servo current, the address to type into a
-laptop, an artificial horizon from the IMU, the robot's state, and a STOP
-button. No other controls. STOP posts to `/stop`, which latches e-stop; clear it
-from the client page.
+`/status` is built for the screen on the roof: battery voltage large enough to
+read from across the room, servo current, the address to type into a laptop, an
+artificial horizon from the IMU, the robot's state, and a STOP button. No other
+controls. STOP posts to `/stop`, which latches e-stop; clear it from the client
+page.
+
+The screen is a 320x480 ST7796S over SPI, mounted on its side, so the page runs
+at 480x320. [deploy/kiosk.sh](deploy/kiosk.sh) rotates the output with
+`wlr-randr --transform 90` before it starts Chromium, because Chromium sizes
+itself to the output once and does not follow a later rotation. Set
+`HEXAPOD_PANEL_TRANSFORM=270` if the panel is mounted the other way up, or
+`normal` for a portrait screen. `HEXAPOD_PANEL_OUTPUT` overrides the connector
+name if yours is not `SPI-1`.
+
+The page has both layouts. Landscape puts the readings on the left and the
+horizon on the right; portrait stacks them. It switches on the media query, so
+the dry run in a browser window works either way.
 
 The panel is Chromium in kiosk mode pointed at `http://localhost:8000/status`.
 Same server, same stack, nothing else to maintain; see Deploy.

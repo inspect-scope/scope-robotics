@@ -2,6 +2,7 @@
 # Show /status full screen on the panel. Waits for the display and the server first.
 #
 #   HEXAPOD_STATUS_URL=http://localhost:8000/status deploy/kiosk.sh
+#   HEXAPOD_PANEL_TRANSFORM=270 deploy/kiosk.sh   # panel mounted the other way up
 #
 # Runs as the desktop user. Works from a systemd user unit or from the
 # compositor's autostart file; it finds the Wayland socket or X display itself.
@@ -19,6 +20,15 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
+# The panel is a 320x480 ST7796S mounted on its side, so the output has to be
+# rotated before Chromium sizes itself to it. Harmless if wlr-randr is missing
+# or the output is named something else on your image.
+if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wlr-randr >/dev/null; then
+  wlr-randr --output "${HEXAPOD_PANEL_OUTPUT:-SPI-1}" \
+            --transform "${HEXAPOD_PANEL_TRANSFORM:-90}" || \
+    echo "kiosk.sh: could not rotate the panel; the page will be cut off" >&2
+fi
+
 # Wait for the server; the kiosk is useless before it.
 until curl -fs -o /dev/null "$URL"; do sleep 1; done
 
@@ -28,9 +38,14 @@ if [ -z "$BROWSER" ]; then
   exit 1
 fi
 
+# 0.96 is 480/500. Chromium will not make a window narrower than 500 CSS px, so
+# on this 480 px panel the right 20 px falls off the glass at scale 1. Scaling
+# the whole window by 480/500 lands it exactly on the screen.
 exec "$BROWSER" \
   --kiosk "$URL" \
   --noerrdialogs --disable-infobars --no-first-run --incognito \
+  --password-store=basic \
   --disable-session-crashed-bubble --disable-features=TranslateUI \
   --check-for-update-interval=31536000 --hide-scrollbars \
-  --window-position=0,0 --window-size=320,480 --force-device-scale-factor=1
+  --window-position=0,0 --window-size="${HEXAPOD_PANEL_SIZE:-480,320}" \
+  --force-device-scale-factor="${HEXAPOD_PANEL_DSF:-0.96}"

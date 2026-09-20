@@ -56,6 +56,41 @@ header { display: flex; align-items: center; gap: 8px; font-size: 14px; color: v
 }
 #stop:active { filter: brightness(.8); }
 #stop.latched { background: var(--surface); color: var(--critical); border: 2px solid var(--critical); }
+
+/* The panel on the robot is a 320x480 ST7796S mounted on its side, so the
+   compositor runs it rotated and the page gets 480x320. Everything still has
+   to be visible at a glance: readings left, horizon right, STOP across. */
+@media (orientation: landscape) {
+  body {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 196px);
+    grid-template-rows: auto minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      "head    head"
+      "volts   horizon"
+      "row     horizon"
+      "err     err"
+      "stop    stop";
+    gap: 6px 10px; padding: 8px 12px 10px;
+  }
+  header { grid-area: head; }
+  .volts { grid-area: volts; align-self: center; }
+  .row { grid-area: row; }
+  .horizon { grid-area: horizon; }
+  #err { grid-area: err; }
+  #stop { grid-area: stop; }
+
+  .volts .big { font-size: 62px; }
+  .volts .big .unit { font-size: 22px; }
+  /* Narrower current tile: the address has to fit whole, it is what you type. */
+  .row { grid-template-columns: minmax(0, 84px) minmax(0, 1fr); gap: 6px; }
+  .tile .value { font-size: 20px; }
+  .tile.ip .value { font-size: 15px; }
+  .horizon { gap: 8px; }
+  .horizon svg { max-height: 138px; }
+  .pr { font-size: 12px; gap: 4px; }
+  .pr b { font-size: 18px; }
+  #stop { height: 56px; font-size: 22px; }
+}
 </style>
 </head>
 <body>
