@@ -20,7 +20,9 @@ intermittent and are not.
 
 Hardware problems hit during bring-up, and what fixed them, are in
 [docs/troubleshooting.md](docs/troubleshooting.md). Check there first when a
-device does not appear, the bus starts failing, or the board will not enumerate.
+device does not appear, the bus starts failing, or the board will not
+enumerate. Diagnoses that turned out to be wrong are kept there too, next to
+what replaced them; the i2c one was believed for weeks.
 
 ## Install
 
@@ -198,7 +200,8 @@ themselves work.
 If the check reports a percentage of failed reads, the chip answers but keeps
 dropping off the bus. That is a physical contact, not a setting: the failure
 rate is the same at every read length and is no better with a repeated-START
-transaction. Find the lead:
+transaction. It is also not the power supply, however much it correlates with
+running off the battery. Find the lead:
 
 ```sh
 python3 tools/i2cwatch.py
@@ -209,6 +212,12 @@ at a time, VCC then GND then SDA then SCL. The one that moves the number is
 the bad one. A sound connection sits at 100% and does not move when you flex
 the loom. On a GY-521 the usual cause is the pin header being pushed through
 the board but never soldered.
+
+Keep going after the first bad contact. On this build there were two in
+series, a crimp in the Grove cable and the i2c hub, and each masked the other:
+fixing one moved the number without ever reaching 100%, which sent days of
+work into filtering and grounding that was never needed. Anything short of
+100% means you are not done.
 
 The check is on the *magnitude* of the acceleration vector, not on z alone.
 Gravity is 1 g whichever way the board is facing, and tilt is computed from the
@@ -230,14 +239,19 @@ when the server starts (keep the robot still), and subtracts it from every
 reading. Pitch and roll come from the accelerometer, positive nose up and right
 side down, smoothed by `imu.smoothing`. The state poller reads it at 10 Hz.
 
-**Bus errors are retried.** On this loom about one read in twenty comes back
-`OSError 121`, a NACK, and more once the legs are moving. Each i2c transaction
-gets `imu.bus_retries` extra attempts 2 ms apart, which clears nearly all of
-them; the state poller still rides out a few that get through and reopens the
-chip after five in a row. `/api/state` reports both counts: `imu.read_errors` is
-every bus error seen, `imu.read_failures` only the ones the retries did not
-clear. A rising `read_failures` means a lead, not noise, and is what `/status`
-complains about.
+**Bus errors are retried.** Each i2c transaction gets `imu.bus_retries` extra
+attempts 2 ms apart; the state poller rides out the ones that get through and
+reopens the chip after five in a row. `/api/state` reports both counts:
+`imu.read_errors` is every bus error seen, `imu.read_failures` only the ones
+the retries did not clear.
+
+A sound loom sits at zero. This one ran at 5 to 10% errors through bring-up
+and that was two bad contacts, not noise; with them fixed it holds 13,639
+reads at 100% on battery, screen on the same two pins. So the retries are
+insurance against vibration, not a way to live with a loom that needs
+fixing. Any sustained `read_errors` is a contact to go and find. A rising
+`read_failures` is the same thing, worse, and is what `/status` complains
+about.
 
 `imu.axis_map` in [config/hexapod.yaml](config/hexapod.yaml) says how the
 chip is mounted. Each entry is the chip axis pointing along the body axis

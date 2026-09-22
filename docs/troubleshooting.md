@@ -47,19 +47,25 @@ The IMU and the screen's touch controller both need pins 3 and 5.
 Electrically fine — I2C is a bus, and 0x68 and 0x5d don't collide. The
 problem is purely mechanical: two Dupont sockets, one pin.
 
-Solved with a Grove I2C hub (Seeed 103321, £3.10 direct from Seeed, £12.64
-from Amazon resellers for the identical SKU). All four sockets on the hub are
+First solved with a Grove I2C hub (Seeed 103321, £3.10 direct from Seeed,
+£12.64 from Amazon resellers for the identical SKU). All four sockets are
 wired in parallel — there's no dedicated input, whichever socket the Pi goes
-into becomes the input.
+into becomes the input. It needs Grove-to-female-Dupont conversion cables
+(Seeed 103316, 5-pack £3.40), and because the screen's touch wires are female
+and so are the conversion cables, two male-male jumper pins to bridge TP_SDA
+and TP_SCL.
 
-Needs Grove-to-female-Dupont conversion cables (Seeed 103316, 5-pack £3.40).
+**The hub is out of the loom.** It was one of the two bad contacts behind the
+read failures below. IMU and touch now share pins 3 and 5 directly. The
+mechanical problem it was bought to solve is back, so whatever replaces it has
+to be a joint you'd trust under vibration. Prove it with `tools/i2cwatch.py`
+before you rely on it; this one passed a casual look.
 
-**Gotcha:** the screen's touch wires are female and so are the conversion
-cables. Female-to-female doesn't mate — two male-male jumper pins are needed
-to bridge TP_SDA and TP_SCL.
+If you do fit a hub, feed its VCC from Pi pin 1 (3V3), not a 5 V pin. It
+passes straight through to all four sockets.
 
-**Feed the hub's VCC from Pi pin 1 (3V3), not a 5 V pin.** It passes straight
-through to all four sockets.
+The body's `body_v3` floor 2 still has a 20 × 40 pocket for the hub at
+`(52, 45)`. Unused for now; leave it or reclaim it on the next print.
 
 ### `dtparam` line silently ignored
 
@@ -98,53 +104,63 @@ unhealthy bus, not a discovery.
 
 ### Read failures: `OSError: [Errno 121] Remote I/O error`
 
-This was the long one. Measured with `tools/i2cwatch.py` at 20 Hz:
+This was the long one, and the first diagnosis was wrong. Both are recorded
+here, because the wrong one was written down and read convincingly for weeks.
+
+**Two bad contacts in series: the Grove cable's VCC crimp, and the hub
+itself.** Either alone is intermittent. Together they mask each other, so
+fixing one never restored 100% and every attempt looked like a partial fix
+that needed one more thing on top. Replace the cable, take the hub out of the
+loom, and the bus is clean:
+
+```
+13,639 reads, 100%, on battery, with the screen's touch controller on the same two pins
+```
+
+**The UBEC was innocent.** Its switching noise is real and measurable on the
+5 V rail, but it never was the cause. With sound contacts the bus holds at
+100% on battery.
+
+What that retracts, all of it previously written down as fact here:
+
+| earlier conclusion | status |
+|---|---|
+| the screen on the bus costs ~6% of reads | wrong. touch is connected for the 100% run |
+| GY-521 pull-ups overload the lines | no evidence. don't desolder the `472` resistors |
+| UBEC noise destroys the bus | wrong |
+| a 2S-to-USB-C buck module is needed | not needed. nothing to fix |
+| extra grounds on pins 9 and 14 took it 10% → 94% | the wires got disturbed, that's all |
+| 1000 µF across the UBEC output | harmless, and not required |
+
+The 1000 µF and the extra ground wires are still fitted. Leave them or don't;
+neither is doing anything.
+
+How it looked while the fault was in place. Every one of these was measured
+through the bad crimp, which is why none of them agree with each other:
 
 | configuration | success rate |
 |---|---|
 | IMU direct to Pi, USB-C power | 100% over 1078 reads |
 | IMU via hub, screen unplugged, USB-C | 100% over 250 reads |
-| IMU via hub, **screen connected**, USB-C | ~93% |
-| IMU via hub, screen connected, **UBEC power** | starts ~94%, collapses to 0% within ~15 s |
+| IMU via hub, screen connected, USB-C | ~93% |
+| IMU via hub, screen connected, UBEC power | starts ~94%, collapses to 0% within ~15 s |
 
-**Two independent causes, which is why fixing one never restored 100%.**
+An intermittent contact responds to anything that flexes the loom, and every
+"fix" here involved unplugging and replugging something. That is the whole
+reason the table reads like two independent causes.
 
-**Cause 1 — the screen on the bus costs ~6% of reads.** Present whether or not
-the kiosk is running, so it isn't the GT911 polling. Most likely pull-up
-loading: the Pi has 1.8 kΩ fixed on SDA/SCL, the GY-521 adds its own pair, the
-Waveshare board adds more. In parallel the total drops below what a device is
-required to sink, and the lines don't reach a clean low.
+**Finding it.** `tools/i2cwatch.py` at 20 Hz, then wiggle one lead at a time,
+VCC, GND, SDA, SCL, and watch which one moves the number. A sound connection
+sits at 100% and does not flinch when you flex the loom. Check continuity
+while bending the cable at the crimp, not with it lying still; a crimp that
+has bitten the insulation instead of the conductor reads fine at rest.
 
-Fix, if it ever matters: desolder the two pull-up resistors from the GY-521
-(small SMD parts marked `472` near the SDA/SCL pins). Not done — 93% is
-absorbed transparently by the retry path, and the server reports 0 read
-failures.
-
-**Cause 2 — the UBEC on the GPIO header destroys the bus.** Switching noise on
-the 5 V rail, injected onto the same header that carries SDA and SCL, with a
-single thin Dupont ground as the only return.
-
-What was tried:
-
-- Extra ground wires (pins 9 + 14): **10% → 94%**. Real improvement, not a fix.
-- 1000 µF electrolytic across the UBEC output at the Pi end: no further gain.
-- Slowing the bus to 50 kHz: no effect (and see the `dtparam` bug above — the
-  first attempt wasn't even applied).
-- Raising the UBEC output above 5.2 V: **don't.** The Pi's 5 V rail is
-  unregulated through the header; anything above ~5.5 V risks damage. I2C runs
-  at 3.3 V from a separate regulator and never sees this rail except as noise.
-
-**Still open.** Preferred fix is a 2S-to-USB-C buck module feeding the Pi
-through its own input, keeping switching noise off the GPIO header entirely
-and restoring the Pi's input protection. Alternatives: a quieter UBEC, or a
-0.1 µF ceramic alongside the 1000 µF plus twisted-pair, shorter, thicker wire.
-
-Until that's resolved the robot can't run off its own battery without losing
-the IMU.
+Then keep going after the first fault. Two in series is what made this take as
+long as it did.
 
 ### Bus latching
 
-Once noise corrupts a transfer mid-byte, a slave can be left holding SDA low
+Once a transfer is corrupted mid-byte, a slave can be left holding SDA low
 waiting for clocks that never come. The bus is then stuck — 2611 consecutive
 failures observed. No amount of retrying recovers it; only power-cycling the
 device or pulsing SCL nine times to walk the slave to a byte boundary.
@@ -152,8 +168,10 @@ device or pulsing SCL nine times to walk the slave to a byte boundary.
 Signature: high success rate, then a hard drop to 0% that persists across
 process restarts (but not across a reboot).
 
-Worth building bus recovery into `imu.py` regardless — a walking robot with
-vibrating connectors will hit this.
+What corrupted the transfer here was the bad crimp dropping VCC mid-read, not
+noise. The latch-up itself is real either way, and a walking robot with
+vibrating connectors will reproduce it, so bus recovery in `imu.py` is still
+worth building.
 
 ---
 
@@ -255,7 +273,7 @@ both header 5 V pins free for the Pi's own current.
 | TP_RST | 11 | | SCLK | 23 |
 | LCD_BL | 12 | | LCD_CS | 24 |
 | LCD_RST | 13 | | | |
-| TP_SDA / TP_SCL | → hub J3 | | | |
+| TP_SDA / TP_SCL | 3 / 5 | | | |
 
 ### Testing the backlight before any driver work
 
@@ -415,6 +433,22 @@ If it doesn't reappear after a clean reboot, it was the swap. If it returns
 every boot, the supply is genuinely sagging at startup, when inrush current
 peaks.
 
+### The UBEC is not the problem
+
+Written down here for a while as the cause of the I2C read failures, with a
+2S-to-USB-C buck module as the planned fix. It wasn't, and there's nothing to
+buy. See the I2C read-failures section above.
+
+At 5.2 V into pins 2 and 9 the Pi runs the full stack on battery with the bus
+at 100%. Switching noise on the rail is measurable and harmless; I2C sits at
+3.3 V off a separate regulator and only ever sees this rail as noise.
+
+The general lesson, which cost days: a power supply is the easiest thing in
+the build to blame and the hardest to exonerate. Noise is always present, so
+any fault that correlates with switching to battery will look like a supply
+problem. Rule it in with a measurement of the thing you think is failing, not
+with a correlation.
+
 ### Pi header power wiring
 
 Pins 2 and 4 are the only 5 V pins, and they're adjacent — a single 3-pin plug
@@ -511,3 +545,20 @@ neutral. The findings that mattered were already established by then.
 **Keep a known-good state to return to.** Before changing wiring, note exactly
 what's plugged where. After a session of moving wires, that note is the
 difference between a two-minute recovery and an hour of bisection.
+
+**Two faults in series look like one weird fault.** The bad crimp and the bad
+hub each hid the other. Every fix produced a partial improvement, which read
+as "right direction, not enough" and pulled the next fix further down the
+wrong road: filtering, grounds, bus speed, a buck module. The tell was there
+the whole time: nothing ever reached 100%. A fix that only moves the number is
+evidence you haven't found the fault.
+
+**Don't compare measurements taken through an intermittent connection.** The
+whole read-failure table disagreed with itself because unplugging things to
+change configuration also reseated the bad crimp. Every number in it was real
+and none of them meant what they appeared to.
+
+**Write the conclusion down with its confidence.** The UBEC diagnosis sat in
+this file as fact, and would have been believed in three months by someone
+with no memory of how thin the evidence was. Retractions stay in the file next
+to what they replace, for the same reason.

@@ -4,9 +4,10 @@ Talks to the chip with plain ioctl on /dev/i2c-N, the same way tools/preflight.p
 does, so there is nothing to pip install. The gyro bias is averaged at startup
 while the robot is known to be still and subtracted from every reading.
 
-Every transaction is retried. About one read in twenty on this loom comes back
-`OSError 121`, and more once the legs are moving; the next attempt gets it. Only
-an error that survives every attempt reaches the caller.
+Every transaction is retried: `OSError 121` is a NACK and the next attempt
+usually gets it. Only an error that survives every attempt reaches the caller.
+A sound loom reports zero errors, so a steady rate here is a bad contact to go
+and find, not something to tune away.
 
 Frames. Readings come out in the body frame used everywhere else: +X right,
 +Y forward, +Z up. `ImuConfig.axis_map` says how the chip is bolted on. Pitch is
