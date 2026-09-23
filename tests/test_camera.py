@@ -87,3 +87,38 @@ def test_close_stops_the_stream(camera):
     time.sleep(0.15)
     assert camera.frames.seq == seq
     assert not camera.ok
+
+
+def test_rotation_0_needs_no_libcamera():
+    from hexapod.camera import _transform
+
+    assert _transform(CameraConfig(rotation=0)) == {}
+
+
+def test_rotation_180_asks_for_both_flips():
+    """A 180 is hflip and vflip together. Skipped off-Pi, where libcamera is absent."""
+    from hexapod.camera import _transform
+
+    pytest.importorskip("libcamera")
+    transform = _transform(CameraConfig(rotation=180))["transform"]
+    assert transform.hflip and transform.vflip
+
+
+@pytest.mark.parametrize("bad", [90, 270, 1, -180])
+def test_rotation_must_be_0_or_180(tmp_path, bad):
+    import yaml
+
+    from hexapod import config as config_mod
+
+    raw = yaml.safe_load(open(config_mod.DEFAULT_CONFIG))
+    raw["camera"]["rotation"] = bad
+    path = tmp_path / "hexapod.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="rotation"):
+        config_mod.load(str(path))
+
+
+def test_configured_rotation_is_loaded():
+    from hexapod import config as config_mod
+
+    assert config_mod.load().camera.rotation == 180

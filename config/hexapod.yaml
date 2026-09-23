@@ -127,3 +127,4 @@ camera:
   jpeg_quality: 85         # stills; the stream uses the encoder's default
   buffers: 2               # full-res frames in flight; each is ~35 MB of CMA
   survey_dir: ~/surveys    # stills go in survey_dir/<session timestamp>/
+  rotation: 180            # camera is mounted upside down. 0 or 180, nothing else

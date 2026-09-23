@@ -7,6 +7,12 @@ buffer of the next request" and never interrupts the stream.
 
 Stills land in `survey_dir/<session timestamp>/<capture timestamp>.jpg`, with a
 `.json` beside each holding the robot state at the moment of capture.
+
+The camera is mounted upside down, so `camera.rotation: 180` flips both streams
+with a libcamera `Transform`. The device tree can do the same job with
+`rotation=180` on the `imx708` overlay, which would also fix `rpicam-still`, but
+the two compose: if you ever get the overlay working, set `camera.rotation: 0`
+here or you are back to an inverted image.
 """
 
 from __future__ import annotations
@@ -32,6 +38,17 @@ STALE_AFTER_S = 2.0  # no frame for this long and the stream counts as down
 
 class CameraError(RuntimeError):
     pass
+
+
+def _transform(config: CameraConfig) -> Dict[str, Any]:
+    """kwargs for create_video_configuration. 180 is hflip and vflip together;
+    the sensor does it during readout, so it is free. Empty dict at 0 so the dry
+    run and the tests never need libcamera."""
+    if config.rotation != 180:
+        return {}
+    from libcamera import Transform
+
+    return {"transform": Transform(hflip=1, vflip=1)}
 
 
 class FrameBuffer(io.BufferedIOBase):
@@ -131,6 +148,7 @@ class Camera:
                 lores={"size": tuple(self.config.lores), "format": lores_format},
                 buffer_count=self.config.buffers,
                 controls={"FrameRate": self.config.stream_fps},
+                **_transform(self.config),
             )
             picam.configure(video)
             picam.options["quality"] = self.config.jpeg_quality

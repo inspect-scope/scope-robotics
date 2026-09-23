@@ -89,11 +89,12 @@ dtparam=compatible=st7796s\0panel-mipi-dbi-spi
 dtparam=width=320,height=480,width-mm=49,height-mm=79
 dtparam=reset-gpio=27,dc-gpio=22,backlight-gpio=18
 dtoverlay=goodix,addr=0x5d
-dtoverlay=imx708,cam0
+dtoverlay=imx708,cam0,rotation=180
 ```
 
 The `compatible`, `width` and `reset-gpio` lines are correctly placed — they
-*are* parameters of the `mipi-dbi-spi` overlay above them.
+*are* parameters of the `mipi-dbi-spi` overlay above them. `rotation=180` is a
+parameter of the `imx708` overlay for the same reason; see the camera section.
 
 ### Phantom device at 0x14
 
@@ -351,6 +352,38 @@ After reboot, `/dev/i2c-10` exists and `i2cdetect -y 10` shows:
 - `UU` at 0x0c — the VCM focus controller
 
 The hardware had been fine the whole time.
+
+### Image is upside down
+
+The camera is mounted inverted, so the sensor's natural orientation is 180 out.
+Fixed once in /boot/firmware/config.txt, on the overlay line:
+
+```
+dtoverlay=imx708,cam0,rotation=180
+```
+
+Reboot for it to take. `rotation=` is an `imx708` overlay parameter, so it has
+to sit on that line, not on its own line below (that's the `dtparam` ordering
+bug in the I2C section, same shape).
+
+libcamera reads it as the sensor's mounting rotation and folds it into the
+readout, so it costs nothing and every consumer gets it: `rpicam-still`,
+`rpicam-hello`, preflight, the server, anything added later.
+
+The alternative is a transform in the code that opens the camera:
+
+```python
+from libcamera import Transform
+picam.create_video_configuration(transform=Transform(hflip=1, vflip=1))
+```
+
+Both flips together are the same 180. It works, but it only fixes the one code
+path that sets it, and `rpicam-still` on the same Pi would still be upside
+down. Chosen against for that reason.
+
+**Don't do both.** They compose, and two 180s is no rotation. `camera.py` says
+so at the top; if an image comes back inverted after this change, look for a
+`Transform` that got added, not for a config.txt line that didn't take.
 
 ### Cable
 

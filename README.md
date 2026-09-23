@@ -309,6 +309,11 @@ capture. `POST /capture` returns the path.
 The live view is MJPEG over `multipart/x-mixed-replace`. It is fine on a LAN or
 a tether. Over a bad link WebRTC would do better; that is not built.
 
+The camera is mounted upside down. The 180 is `rotation=180` on the `imx708`
+overlay in `/boot/firmware/config.txt`, not a `Transform` in
+[hexapod/camera.py](hexapod/camera.py), so `rpicam-still` and the preflight see
+the same image the stream does. Setting it in both places cancels out.
+
 Pi 4 and earlier encode the stream in hardware. Pi 5 has no hardware JPEG
 encoder, so it uses a software one on an RGB low-resolution stream; the module
 picks based on the platform. The full-resolution stream costs about 35 MB of

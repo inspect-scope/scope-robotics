@@ -109,6 +109,7 @@ class CameraConfig:
     jpeg_quality: int = 85
     buffers: int = 2
     survey_dir: str = "~/surveys"
+    rotation: int = 0  # 0 or 180. 180 for a camera mounted upside down
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,10 @@ def _camera(raw: Dict[str, Any]) -> CameraConfig:
         raise ValueError("camera.lores and camera.still are [width, height]")
     if lores[0] > still[0] or lores[1] > still[1]:
         raise ValueError("camera.lores must not be larger than camera.still")
+    rotation = int(raw.get("rotation", defaults.rotation))
+    if rotation not in (0, 180):
+        # A sensor can only flip, not rotate. 90 would need a transpose we do not do.
+        raise ValueError("camera.rotation must be 0 or 180")
     return CameraConfig(
         enabled=bool(raw.get("enabled", defaults.enabled)),
         lores=lores,  # type: ignore[arg-type]
@@ -175,6 +180,7 @@ def _camera(raw: Dict[str, Any]) -> CameraConfig:
         jpeg_quality=int(raw.get("jpeg_quality", defaults.jpeg_quality)),
         buffers=max(1, int(raw.get("buffers", defaults.buffers))),
         survey_dir=str(raw.get("survey_dir", defaults.survey_dir)),
+        rotation=rotation,
     )
 
 
