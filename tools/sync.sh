@@ -3,6 +3,7 @@
 #
 #   tools/sync.sh                            # sync only
 #   tools/sync.sh .venv/bin/hexapod check    # sync, then run that on the Pi
+#   tools/sync.sh sudo systemctl restart hexapod
 #   HEXAPOD_HOST=hexapod@192.168.11.253 tools/sync.sh
 #
 # The Pi's .venv, .git and caches are excluded, so they survive --delete.
@@ -26,5 +27,6 @@ echo "synced -> $HOST:$DEST"
 
 if [ "$#" -gt 0 ]; then
   echo "--- running on $HOST: $* ---"
-  ssh "$HOST" "cd $DEST && $*"
+  # -t so anything that prompts, sudo most of all, has a terminal to prompt on.
+  ssh -t "$HOST" "cd $DEST && $*"
 fi

@@ -89,12 +89,11 @@ dtparam=compatible=st7796s\0panel-mipi-dbi-spi
 dtparam=width=320,height=480,width-mm=49,height-mm=79
 dtparam=reset-gpio=27,dc-gpio=22,backlight-gpio=18
 dtoverlay=goodix,addr=0x5d
-dtoverlay=imx708,cam0,rotation=180
+dtoverlay=imx708,cam0
 ```
 
 The `compatible`, `width` and `reset-gpio` lines are correctly placed — they
-*are* parameters of the `mipi-dbi-spi` overlay above them. `rotation=180` is a
-parameter of the `imx708` overlay for the same reason; see the camera section.
+*are* parameters of the `mipi-dbi-spi` overlay above them.
 
 ### Phantom device at 0x14
 
@@ -355,35 +354,45 @@ The hardware had been fine the whole time.
 
 ### Image is upside down
 
-The camera is mounted inverted, so the sensor's natural orientation is 180 out.
-Fixed once in /boot/firmware/config.txt, on the overlay line:
+The camera is mounted inverted. **Fixed in `config/hexapod.yaml`:**
+
+```yaml
+camera:
+  rotation: 180
+```
+
+[hexapod/camera.py](../hexapod/camera.py) turns that into
+`Transform(hflip=1, vflip=1)` on the video configuration. Both flips together
+are a 180, the sensor does them during readout, and it costs nothing. Restart
+the service to pick it up, no reboot.
+
+**The device-tree route was tried first and did not work.** The plan was:
 
 ```
 dtoverlay=imx708,cam0,rotation=180
 ```
 
-Reboot for it to take. `rotation=` is an `imx708` overlay parameter, so it has
-to sit on that line, not on its own line below (that's the `dtparam` ordering
-bug in the I2C section, same shape).
+which is a documented `imx708` overlay parameter, is read by libcamera as the
+sensor's mounting rotation, and would have fixed `rpicam-still` and every
+future tool at the same time. Better idea on paper. The image came back
+inverted anyway.
 
-libcamera reads it as the sensor's mounting rotation and folds it into the
-readout, so it costs nothing and every consumer gets it: `rpicam-still`,
-`rpicam-hello`, preflight, the server, anything added later.
+Not chased down, because the yaml fix works and the camera only has one
+consumer that matters. If you want to know which layer swallowed it:
 
-The alternative is a transform in the code that opens the camera:
-
-```python
-from libcamera import Transform
-picam.create_video_configuration(transform=Transform(hflip=1, vflip=1))
+```sh
+grep -n "imx708\|camera_auto_detect" /boot/firmware/config.txt
+rpicam-still -n -t 1000 -o /tmp/orient.jpg
 ```
 
-Both flips together are the same 180. It works, but it only fixes the one code
-path that sets it, and `rpicam-still` on the same Pi would still be upside
-down. Chosen against for that reason.
+`rpicam-still` upright and the stream inverted means libcamera honoured the
+overlay and picamera2 overrode it. Both inverted means the overlay line never
+took, and `camera_auto_detect=1` still being present is the first suspect,
+since the firmware then loads its own overlay without the parameter.
 
-**Don't do both.** They compose, and two 180s is no rotation. `camera.py` says
-so at the top; if an image comes back inverted after this change, look for a
-`Transform` that got added, not for a config.txt line that didn't take.
+**Only flip in one place.** Two 180s is no rotation. If the overlay line is in
+`config.txt`, take it out, or set `camera.rotation: 0` and leave it. An image
+that inverts after an unrelated OS update is this, not the camera moving.
 
 ### Cable
 
