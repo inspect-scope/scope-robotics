@@ -394,8 +394,9 @@ the server still starts and the panel says so.
 ## Web interface
 
 - Live view top left, from the camera's low-resolution stream. **Capture** (or `C`) saves a full-resolution still and shows the file name.
-- Left pad moves, right pad turns. `W A S D` and `Q E` on a keyboard.
-- Space is e-stop. So is the red button, and `POST /stop` if the page is wedged.
+- Left pad moves, right pad turns. Click the pad block to capture the keyboard:
+  `W A S D` moves, `Q E` turns, `Esc` releases. Those keys do nothing until then.
+- Space is e-stop from anywhere. So is the red button, and `POST /stop` if the page is wedged.
 - Stand, Sit and Torque are separate. Sit before you cut torque.
 - The top-down view shows live foot positions. Green is on the ground, hollow blue is mid swing, yellow means that leg hit a joint limit.
 - Posture and gait sliders tune ride height, body tilt, cycle time, step lift and top speed while it walks.

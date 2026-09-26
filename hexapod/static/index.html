@@ -123,6 +123,11 @@ main { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 12px 
 .act-row .pwm > i { display: block; height: 100%; width: 0; background: var(--accent); }
 .act-row .pwm::after { content: ""; position: absolute; top: 0; bottom: 0; left: 47.4%; width: 1px;
   background: var(--baseline); } /* 1500us mark inside 600..2400 */
+.drive { border: 1px solid var(--grid); border-radius: var(--radius); padding: 14px 16px 12px;
+  outline: none; cursor: pointer; }
+.drive.engaged { border-color: var(--accent); cursor: default; }
+.drive .hint { display: block; text-align: center; font-size: 12px; color: var(--muted); margin-top: 10px; }
+.drive.engaged .hint { color: var(--accent); }
 .pads { display: flex; gap: 24px; justify-content: space-between; align-items: center; }
 .pad-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .pad-wrap .cap { font-size: 12px; color: var(--muted); }
@@ -228,15 +233,18 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     </div>
   </div>
 
-  <div class="pads">
-    <div class="pad-wrap">
-      <div class="pad" id="pad-move"><div class="knob"></div></div>
-      <span class="cap">Move &middot; W A S D</span>
+  <div class="drive" id="drive" tabindex="0" aria-label="Drive controls. Click to capture the keyboard.">
+    <div class="pads">
+      <div class="pad-wrap">
+        <div class="pad" id="pad-move"><div class="knob"></div></div>
+        <span class="cap">Move &middot; W A S D</span>
+      </div>
+      <div class="pad-wrap">
+        <div class="pad wide" id="pad-turn"><div class="knob"></div></div>
+        <span class="cap">Turn &middot; Q E</span>
+      </div>
     </div>
-    <div class="pad-wrap">
-      <div class="pad wide" id="pad-turn"><div class="knob"></div></div>
-      <span class="cap">Turn &middot; Q E</span>
-    </div>
+    <span class="hint" id="drive-hint">click to capture keyboard</span>
   </div>
 
   <section class="actuators">
@@ -314,30 +322,62 @@ pad($("pad-turn"), (x) => { drive.yaw = round2(-x); }, "x"); // stick right = tu
 const round2 = (v) => Math.round(v * 100) / 100;
 
 /* ---------------- keyboard ---------------- */
+// Space and C stay global. WASD/QE only run while the pad block is focused.
+const DRIVE_KEYS = { w: "vy+", s: "vy-", d: "vx+", a: "vx-", q: "yaw+", e: "yaw-" };
+const HINT_IDLE = "click to capture keyboard";
+const HINT_LIVE = "WASD move · QE turn · Esc to release";
 const held = new Set();
-const KEYS = { w: "vy+", s: "vy-", d: "vx+", a: "vx-", q: "yaw+", e: "yaw-" };
+let keysOwn = false;
+const driveEl = $("drive");
+
+function keysOn() { return document.activeElement === driveEl; }
+
+function setKnob(el, nx, ny) {
+  const r = el.getBoundingClientRect();
+  const knob = el.querySelector(".knob");
+  knob.style.transform = `translate(calc(-50% + ${nx * (r.width / 2 - 34)}px), calc(-50% + ${-ny * (r.height / 2 - 34)}px))`;
+}
+
+function syncDrive() {
+  const on = keysOn();
+  driveEl.classList.toggle("engaged", on);
+  $("drive-hint").textContent = on ? HINT_LIVE : HINT_IDLE;
+  if (!on) {
+    held.clear();
+    applyKeys();
+  }
+}
+
+driveEl.addEventListener("pointerdown", () => { driveEl.focus(); syncDrive(); });
+driveEl.addEventListener("focusin", syncDrive);
+driveEl.addEventListener("focusout", syncDrive);
+
 addEventListener("keydown", (ev) => {
   const key = ev.key.toLowerCase();
   if (key === " ") { ev.preventDefault(); return estop(); }
+  if (key === "escape" && keysOn()) { ev.preventDefault(); return driveEl.blur(); }
   if (key === "c" && !ev.repeat) { ev.preventDefault(); return capture(); }
-  if (KEYS[key]) { held.add(key); ev.preventDefault(); applyKeys(); }
+  if (!keysOn() || !DRIVE_KEYS[key]) return;
+  held.add(key); ev.preventDefault(); applyKeys();
 });
 addEventListener("keyup", (ev) => {
   const key = ev.key.toLowerCase();
-  if (KEYS[key]) { held.delete(key); applyKeys(); }
+  if (DRIVE_KEYS[key]) { held.delete(key); applyKeys(); }
 });
-addEventListener("blur", () => { held.clear(); applyKeys(); });
+addEventListener("blur", () => { driveEl.blur(); held.clear(); applyKeys(); });
+
 function applyKeys() {
   if (!held.size && !keysOwn) return;
   keysOwn = held.size > 0;
   const axis = { vx: 0, vy: 0, yaw: 0 };
   held.forEach((key) => {
-    const [name, sign] = [KEYS[key].slice(0, -1), KEYS[key].slice(-1) === "+" ? 1 : -1];
+    const [name, sign] = [DRIVE_KEYS[key].slice(0, -1), DRIVE_KEYS[key].slice(-1) === "+" ? 1 : -1];
     axis[name] = sign;
   });
   Object.assign(drive, axis);
+  setKnob($("pad-move"), drive.vx, drive.vy);
+  setKnob($("pad-turn"), -drive.yaw, 0);
 }
-let keysOwn = false;
 
 /* ---------------- buttons ---------------- */
 function estop() { send({ type: "estop" }); fetch("/api/estop", { method: "POST" }).catch(() => {}); }
