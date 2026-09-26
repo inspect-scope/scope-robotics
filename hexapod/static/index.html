@@ -114,6 +114,7 @@ main { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 12px 
 .act-leg .name { font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between;
   align-items: baseline; gap: 8px; }
 .act-leg .touch { font-size: 11px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+.act-leg .touch.down { color: var(--good); }
 .act-leg.limited .name { color: var(--warning); }
 .act-row { display: grid; grid-template-columns: 44px 28px 1fr auto; gap: 6px 8px; align-items: center;
   font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-2); margin: 5px 0; }
@@ -229,7 +230,7 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     </div>
     <div class="stage3d" id="stage3d">
       <canvas id="bot3d" width="640" height="640" aria-label="Expected 3D pose from commanded servo pulses"></canvas>
-      <span class="hint">drag to orbit · expected pose from commanded pulses</span>
+      <span class="hint">drag to orbit · green pads = foot switch closed</span>
     </div>
   </div>
 
@@ -250,7 +251,7 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   <section class="actuators">
     <div class="hd">
       <span class="title">Servo actuation</span>
-      <span class="note" id="act-note">commanded SET pulses. board reports pack V, rail A and touch, not servo angle.</span>
+      <span class="note" id="act-note">commanded SET pulses. board reports pack V, rail A and foot switches, not servo angle.</span>
     </div>
     <div class="act-grid" id="actuators"></div>
   </section>
@@ -505,11 +506,14 @@ function buildStance(names, coxae) {
     const bone = node("line", { x1: cx, y1: -cy, x2: cx, y2: -cy,
       stroke: "var(--baseline)", "stroke-width": 5, "stroke-linecap": "round" });
     const ghost = node("circle", { r: 4, fill: "var(--grid)" });
-    const foot = node("circle", { r: 11, fill: "var(--muted)", stroke: "var(--surface)", "stroke-width": 2 });
+    const rod = node("line", { stroke: "var(--baseline)", "stroke-width": 3, "stroke-linecap": "round" });
+    const pad = { r: 7, fill: "var(--muted)", stroke: "var(--surface)", "stroke-width": 1.5 };
+    const padA = node("circle", pad);
+    const padB = node("circle", pad);
     const tag = node("text", { "font-size": 30, fill: "var(--muted)", "text-anchor": "middle" });
     tag.textContent = name;
-    svg.append(bone, ghost, foot, tag);
-    stance.legs[name] = { bone, ghost, foot, tag, coxa: [cx, cy] };
+    svg.append(bone, ghost, rod, padA, padB, tag);
+    stance.legs[name] = { bone, ghost, rod, padA, padB, tag, coxa: [cx, cy] };
   }
   stance.ready = true;
 }
@@ -522,15 +526,28 @@ function drawStance(s) {
     if (!point) continue;
     const [x, y, z] = point;
     const lift = Math.max(0, z + s.height);          // mm above the ground plane
-    const down = (s.contacts || {})[name] && lift < 1;
+    const down = !!(s.contacts || {})[name];
+    const [cx, cy] = leg.coxa;
+    let ax = -(y - cy), ay = x - cx;
+    const span = Math.hypot(ax, ay) || 1;
+    ax = ax / span * 12;
+    ay = ay / span * 12;
+    const x1 = x + ax, y1 = y + ay, x2 = x - ax, y2 = y - ay;
+    const fill = lifted.has(name) ? "var(--warning)" : down ? "var(--good)" : "var(--surface)";
+    const stroke = lifted.has(name) ? "var(--warning)" : lift > 1 ? "var(--accent)" : "var(--muted)";
+    const r = 7 + lift * 0.08;
     leg.bone.setAttribute("x2", x); leg.bone.setAttribute("y2", -y);
-    leg.foot.setAttribute("cx", x); leg.foot.setAttribute("cy", -y);
+    leg.rod.setAttribute("x1", x1); leg.rod.setAttribute("y1", -y1);
+    leg.rod.setAttribute("x2", x2); leg.rod.setAttribute("y2", -y2);
+    for (const [pad, px, py] of [[leg.padA, x1, y1], [leg.padB, x2, y2]]) {
+      pad.setAttribute("cx", px);
+      pad.setAttribute("cy", -py);
+      pad.setAttribute("r", r);
+      pad.setAttribute("fill", fill);
+      pad.setAttribute("stroke", stroke);
+    }
     leg.tag.setAttribute("x", x * 1.2); leg.tag.setAttribute("y", -y * 1.2 + 10);
     leg.ghost.setAttribute("cx", x); leg.ghost.setAttribute("cy", -y);
-    // A foot in the air grows and goes hollow; a foot taking load is solid green.
-    leg.foot.setAttribute("r", 11 + lift * 0.14);
-    leg.foot.setAttribute("fill", lifted.has(name) ? "var(--warning)" : down ? "var(--good)" : "var(--surface)");
-    leg.foot.setAttribute("stroke", lifted.has(name) ? "var(--warning)" : lift > 1 ? "var(--accent)" : "var(--muted)");
     leg.bone.setAttribute("stroke", lift > 1 ? "var(--grid)" : "var(--baseline)");
   }
   const scale = 1.1;
@@ -567,8 +584,13 @@ function drawActuators(s) {
   const [lo, hi] = actLimits;
   for (const [name, joints] of Object.entries(s.actuators || {})) {
     const touch = (s.touch_volts || {})[name];
+    const down = !!(s.contacts || {})[name];
     const label = $("touch-" + name);
-    if (label) label.textContent = touch == null ? "" : `${touch.toFixed(2)} V touch`;
+    if (label) {
+      const volts = touch == null ? "" : ` · ${touch.toFixed(2)} V`;
+      label.textContent = (down ? "down" : "up") + volts;
+      label.classList.toggle("down", down);
+    }
     const limited = (s.limited_legs || []).includes(name);
     $("act-" + name)?.classList.toggle("limited", limited);
     for (const [joint, row] of Object.entries(joints)) {
@@ -655,6 +677,20 @@ function boxAt(cx, cy, cz, sx, sy, sz, pose) {
   return out;
 }
 
+function footGear(knee, foot) {
+  // Rod across the tibia tip, rubber on each end, switch body just above.
+  const tibia = vnorm(vsub(foot, knee));
+  let across = vcross(tibia, [0, 0, 1]);
+  if (vlen(across) < 0.2) across = vcross(tibia, [1, 0, 0]);
+  across = vnorm(across);
+  const half = 14;
+  return {
+    hub: vadd(foot, vscale(tibia, -7)),
+    a: vadd(foot, vscale(across, half)),
+    b: vadd(foot, vscale(across, -half)),
+  };
+}
+
 function beamAt(a, b, thick) {
   const along = vnorm(vsub(b, a));
   const helper = Math.abs(along[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
@@ -727,42 +763,47 @@ function draw3d(s) {
   }
 
   pushBox(faces, boxAt(0, 0, 34, 118, 148, 88, pose), "#2a2a28");
-  pushBox(faces, boxAt(0, 62, 80, 24, 18, 8, pose), "#3a3a36");
 
   const limited = new Set((s && s.limited_legs) || []);
-  const contacts = (s && s.contacts) || {};
-  const height = s ? s.height : 80;
+  const switches = (s && s.contacts) || {};
+  const pads = [];
   const bones = [];
   for (const [name, points] of Object.entries((s && s.chains) || {})) {
     const [origin, femur, knee, foot] = points;
-    const lift = Math.max(0, foot[2] + height);
-    const down = contacts[name] && lift < 1;
+    const down = !!switches[name];
     const bone = limited.has(name) ? "#fab219" : "#f0eee6";
     const servo = "#3d4a52";
+    const { hub, a, b } = footGear(knee, foot);
     pushBox(faces, beamAt(origin, femur, 18), bone);
     pushBox(faces, beamAt(femur, knee, 20), bone);
-    pushBox(faces, beamAt(knee, foot, 14), bone);
+    pushBox(faces, beamAt(knee, hub, 14), bone);
     pushBox(faces, boxAt(origin[0], origin[1], origin[2], 24, 24, 24, {}), servo);
     pushBox(faces, boxAt(femur[0], femur[1], femur[2], 26, 22, 22, {}), servo);
     pushBox(faces, boxAt(knee[0], knee[1], knee[2], 24, 20, 20, {}), servo);
-    const tip = down ? "#0ca30c" : limited.has(name) ? "#fab219" : "#3987e5";
-    pushBox(faces, boxAt(foot[0], foot[1], foot[2], 12, 12, 10, {}), tip);
-    bones.push({ points, color: limited.has(name) ? "#fab219" : "#c8c6bc" });
+    pushBox(pads, boxAt(hub[0], hub[1], hub[2], 12, 10, 10, {}), "#2c2c2a");
+    pushBox(pads, beamAt(a, b, 4), "#3a3a38");
+    const rubber = down ? "#0ca30c" : limited.has(name) ? "#fab219" : "#5a5a56";
+    pushBox(pads, boxAt(a[0], a[1], a[2] - 4, 10, 10, 9, {}), rubber);
+    pushBox(pads, boxAt(b[0], b[1], b[2] - 4, 10, 10, 9, {}), rubber);
+    bones.push({ points: [origin, femur, knee, hub], color: limited.has(name) ? "#fab219" : "#c8c6bc" });
   }
 
-  faces.sort((a, b) => b.depth - a.depth);
-  for (const face of faces) {
-    const pts = face.idxs.map((i) => project3d(face.world[i], w, h));
-    ctx.beginPath();
-    ctx.moveTo(pts[0][0], pts[0][1]);
-    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
-    ctx.closePath();
-    ctx.fillStyle = face.color;
-    ctx.fill();
-    ctx.strokeStyle = "rgba(0,0,0,.28)";
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
+  const paint = (list) => {
+    list.sort((a, b) => b.depth - a.depth);
+    for (const face of list) {
+      const pts = face.idxs.map((i) => project3d(face.world[i], w, h));
+      ctx.beginPath();
+      ctx.moveTo(pts[0][0], pts[0][1]);
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+      ctx.closePath();
+      ctx.fillStyle = face.color;
+      ctx.fill();
+      ctx.strokeStyle = "rgba(0,0,0,.28)";
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+  };
+  paint(faces);
 
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
@@ -775,6 +816,25 @@ function draw3d(s) {
     ctx.lineWidth = 2.5;
     ctx.stroke();
   }
+  // Flat roof decal. Painted after the body so the roof cannot bury it.
+  const roof = 79;
+  const arrow = [
+    [0, 54, roof],
+    [13, 24, roof],
+    [5, 28, roof],
+    [5, -16, roof],
+    [-5, -16, roof],
+    [-5, 28, roof],
+    [-13, 24, roof],
+  ].map((p) => project3d(posePoint(p, pose), w, h));
+  ctx.beginPath();
+  ctx.moveTo(arrow[0][0], arrow[0][1]);
+  for (let i = 1; i < arrow.length; i++) ctx.lineTo(arrow[i][0], arrow[i][1]);
+  ctx.closePath();
+  ctx.fillStyle = "#3a3a36";
+  ctx.fill();
+
+  paint(pads);
 }
 
 /* ---------------- render ---------------- */

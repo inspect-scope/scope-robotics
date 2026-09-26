@@ -226,6 +226,9 @@ class Controller:
         angles, limited = self.kinematics.solve_reporting(feet, pose)
         pulses = self.kinematics.pulse_frame(angles)
         self.board.set_frame(pulses)
+        simulate = getattr(self.board, "simulate_contacts", None)
+        if simulate is not None:
+            simulate(feet, height)
 
         with self._lock:
             self._limited = limited

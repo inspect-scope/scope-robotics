@@ -166,6 +166,23 @@ def test_telemetry_socket_only_pushes(client):
         assert socket.receive_json()["type"] == "state"
 
 
+def test_dry_run_contacts_open_in_swing(client):
+    snap = client.get("/api/state").json()
+    assert snap["contacts"] and all(snap["contacts"].values())
+
+    with client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "stand"})
+        assert _wait_for(lambda: client.controller.snapshot().state == "standing")
+        assert all(client.controller.snapshot().contacts.values())
+
+        def tripod():
+            socket.send_json({"type": "drive", "vx": 0, "vy": 1, "yaw": 0})
+            down = client.controller.snapshot().contacts
+            return any(down.values()) and not all(down.values())
+
+        assert _wait_for(tripod)
+
+
 def test_websocket_drives_the_robot(client):
     with client.websocket_connect("/ws") as socket:
         socket.send_json({"type": "stand"})
