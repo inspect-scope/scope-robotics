@@ -1,38 +1,65 @@
 """Gait generator.
 
-Produces ground-frame foot targets from a body velocity command. Patterns
-share the same stroke math (`v + omega x r`) and differ by phase layout:
+Walks share one stroke (`v + omega x r`) and differ only by a phase table.
+Tricks (bounce, jump) sit beside that loop so a new walk is a catalog row,
+not a new class.
 
-  tripod  two groups of three, 50/50 stance (Chica walk3)
-  ripple  one leg at a time, 5/6 stance (Chica walk1)
-  wave    one leg around the body, 5/6 stance (Chica walkwave)
-
-Per leg the ground velocity is `v_body + omega x r`, where `r` is the leg's
-neutral foot position, so translation and turning compose without a special
-case for spinning on the spot.
+Chica names are the client commands from server 0.0.4a. Ours are the ids.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from dataclasses import dataclass, replace
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .config import Config
+from .kinematics import BodyPose
 
 Vec3 = Tuple[float, float, float]
+Group = Tuple[str, ...]
 
 
 class GaitKind:
     Tripod = "tripod"
+    Triple = "triple"
+    Triple25 = "triple25"
     Ripple = "ripple"
+    Ripple15 = "ripple15"
     Wave = "wave"
 
 
-GAIT_KINDS = (GaitKind.Tripod, GaitKind.Ripple, GaitKind.Wave)
+class TrickKind:
+    Bounce = "bounce"
+    Jump = "jump"
+
+
 WAVE_ORDER = ("R1", "R2", "R3", "L3", "L2", "L1")
-STANCE_FRACTION = 0.5  # tripod: half the cycle on the ground, half in the air
+STANCE_FRACTION = 0.5  # tripod: half the cycle on the ground
 _STOP_EPSILON = 1.0  # mm of remaining stroke below which we call it stopped
+
+BOUNCE_AMP_MM = 8.0
+BOUNCE_HZ = 2.5
+JUMP_CROUCH_MM = 18.0
+JUMP_AIR_MM = 28.0
+JUMP_CROUCH_S = 0.16
+JUMP_PUSH_S = 0.10
+JUMP_LAND_S = 0.18
+
+
+@dataclass(frozen=True)
+class WalkSpec:
+    """One cyclic walk. `groups` swing in order; `stance` is the down duty."""
+
+    kind: str
+    chica: str
+    stance: float
+    groups: Tuple[Group, ...]
+
+    @property
+    def offsets(self) -> Dict[str, float]:
+        n = len(self.groups)
+        return {name: i / n for i, group in enumerate(self.groups) for name in group}
 
 
 @dataclass(frozen=True)
@@ -77,26 +104,107 @@ def _step(current: float, target: float, max_delta: float) -> float:
     return target
 
 
-class TripodGait:
+def _pairs(left: str, right: str) -> Group:
+    return (left, right)
+
+
+def walks_for(tripod_groups: List[List[str]]) -> Dict[str, WalkSpec]:
+    """Build the walk catalog from the robot's tripod grouping.
+
+    A new walk is another WalkSpec in this table. The stepper does not change.
+    """
+    a, b = (tuple(group) for group in tripod_groups)
+    ripple = tuple(name for pair in zip(a, b) for name in pair)
+    fronts = _pairs("L1", "R1")
+    mids = _pairs("L2", "R2")
+    rears = _pairs("L3", "R3")
+    singles: Callable[[Tuple[str, ...]], Tuple[Group, ...]] = lambda order: tuple((name,) for name in order)
+
+    specs = (
+        WalkSpec(GaitKind.Tripod, "walk3", STANCE_FRACTION, (a, b)),
+        WalkSpec(GaitKind.Triple, "walk2", 2.0 / 3.0, (fronts, mids, rears)),
+        WalkSpec(GaitKind.Triple25, "walk25", 0.6, (fronts, mids, rears)),
+        WalkSpec(GaitKind.Ripple, "walk1", 5.0 / 6.0, singles(ripple)),
+        WalkSpec(GaitKind.Ripple15, "walk15", 0.75, singles(ripple)),
+        WalkSpec(GaitKind.Wave, "walkwave", 5.0 / 6.0, singles(WAVE_ORDER)),
+    )
+    return {spec.kind: spec for spec in specs}
+
+
+WALK_KINDS = (
+    GaitKind.Tripod,
+    GaitKind.Triple,
+    GaitKind.Triple25,
+    GaitKind.Ripple,
+    GaitKind.Ripple15,
+    GaitKind.Wave,
+)
+GAIT_KINDS = WALK_KINDS  # older import name
+
+
+def walk_catalog(tripod_groups: List[List[str]]) -> List[Dict[str, str]]:
+    """Ids and Chica names for the client. Order is WALK_KINDS."""
+    walks = walks_for(tripod_groups)
+    return [{"id": kind, "chica": walks[kind].chica} for kind in WALK_KINDS]
+
+
+@dataclass
+class TrickOut:
+    """Overlay the stepper applies on top of a (possibly settled) stance."""
+
+    height_adj: float = 0.0
+    body_z: float = 0.0
+    blocking: bool = False
+
+
+class Gait:
     def __init__(self, config: Config, pattern: str = GaitKind.Tripod):
         self.config = config
         self.groups: List[List[str]] = config.tripod_groups
+        self.walks = walks_for(config.tripod_groups)
         self.phase = 0.0
         self.velocity = Velocity()
         self.walking = False
+        self.trick: Optional[str] = None
+        self._bounce_t = 0.0
+        self._jump_t = 0.0
+        self._body_z = 0.0
         self.set_pattern(pattern)
 
     def set_pattern(self, pattern: str) -> None:
-        if pattern not in GAIT_KINDS:
+        spec = self.walks.get(pattern)
+        if spec is None:
+            spec = next((row for row in self.walks.values() if row.chica == pattern), None)
+        if spec is None:
             raise ValueError(f"unknown gait pattern {pattern!r}")
-        self.pattern = pattern
-        self._offset, self.stance_fraction = _phase_layout(pattern, self.groups)
+        self.pattern = spec.kind
+        self.spec = spec
+        self.stance_fraction = spec.stance
+        self._offset = spec.offsets
         self.phase = 0.0
 
     def reset(self) -> None:
         self.phase = 0.0
         self.velocity = Velocity()
         self.walking = False
+        self.trick = None
+        self._bounce_t = 0.0
+        self._jump_t = 0.0
+
+    def start_jump(self) -> None:
+        self.trick = TrickKind.Jump
+        self._jump_t = 0.0
+        self.walking = False
+        self.velocity = Velocity()
+        self.phase = 0.0
+
+    def set_bounce(self, enabled: bool) -> None:
+        if enabled:
+            self.trick = TrickKind.Bounce
+            self._bounce_t = 0.0
+            return
+        if self.trick == TrickKind.Bounce:
+            self.trick = None
 
     def strokes(self, velocity: Velocity) -> Dict[str, Tuple[float, float]]:
         """Ground displacement each foot covers during one stance phase, per leg."""
@@ -118,6 +226,10 @@ class TripodGait:
 
     def step(self, dt: float, command: Velocity, height: float) -> Dict[str, Vec3]:
         """Advance the gait by `dt` and return foot targets at the given ride height."""
+        overlay = self._advance_trick(dt)
+        if overlay.blocking:
+            command = Velocity()
+
         s = self.config.stance
         # A full stop takes ~2 cycles of ramp; that is gentle enough to stay upright.
         max_delta = s.max_speed * dt / (s.cycle_s * 2.0) * 4.0
@@ -142,6 +254,7 @@ class TripodGait:
             self.phase = (self.phase + dt / s.cycle_s) % 1.0
 
         swing_fraction = 1.0 - self.stance_fraction
+        ride = height + overlay.height_adj
         feet: Dict[str, Vec3] = {}
         for name, leg in self.config.legs.items():
             nx, ny = leg.neutral_xy
@@ -156,27 +269,49 @@ class TripodGait:
                 progress = (leg_phase - swing_fraction) / self.stance_fraction
                 along = 0.5 - progress
                 lift = 0.0
-            feet[name] = (nx + sx * along, ny + sy * along, -height + lift)
+            feet[name] = (nx + sx * along, ny + sy * along, -ride + lift)
         return feet
+
+    def pose_overlay(self, pose: BodyPose) -> BodyPose:
+        """Body-frame hop. Bounce and jump lift the chassis without retargeting feet."""
+        if self.trick is None:
+            return pose
+        return replace(pose, z=pose.z + self._body_z)
 
     def group_in_swing(self) -> int:
         return 0 if self.phase < (1.0 - self.stance_fraction) else 1
 
+    def _advance_trick(self, dt: float) -> TrickOut:
+        self._body_z = 0.0
+        if self.trick == TrickKind.Bounce:
+            self._bounce_t += dt
+            self._body_z = BOUNCE_AMP_MM * math.sin(2.0 * math.pi * BOUNCE_HZ * self._bounce_t)
+            return TrickOut(body_z=self._body_z, blocking=False)
 
-def _phase_layout(pattern: str, groups: List[List[str]]) -> Tuple[Dict[str, float], float]:
-    """Per-leg phase offset in [0, 1) and the stance duty cycle."""
-    if pattern == GaitKind.Tripod:
-        offsets = {name: 0.5 * index for index, group in enumerate(groups) for name in group}
-        return offsets, STANCE_FRACTION
+        if self.trick != TrickKind.Jump:
+            return TrickOut()
 
-    if pattern == GaitKind.Ripple:
-        # Zip the two tripods so lift stays balanced: L1, R1, R2, L2, L3, R3.
-        order = [name for pair in zip(*groups) for name in pair]
-        n = len(order)
-        return {name: i / n for i, name in enumerate(order)}, 1.0 - 1.0 / n
+        self._jump_t += dt
+        t = self._jump_t
+        crouch_end = JUMP_CROUCH_S
+        push_end = crouch_end + JUMP_PUSH_S
+        land_end = push_end + JUMP_LAND_S
 
-    if pattern == GaitKind.Wave:
-        n = len(WAVE_ORDER)
-        return {name: i / n for i, name in enumerate(WAVE_ORDER)}, 1.0 - 1.0 / n
+        if t < crouch_end:
+            u = t / crouch_end
+            return TrickOut(height_adj=-JUMP_CROUCH_MM * u, blocking=True)
+        if t < push_end:
+            u = (t - crouch_end) / JUMP_PUSH_S
+            self._body_z = JUMP_AIR_MM * u
+            return TrickOut(height_adj=-JUMP_CROUCH_MM * (1.0 - u), body_z=self._body_z, blocking=True)
+        if t < land_end:
+            u = (t - push_end) / JUMP_LAND_S
+            self._body_z = JUMP_AIR_MM * (1.0 - u)
+            return TrickOut(body_z=self._body_z, blocking=True)
 
-    raise ValueError(f"unknown gait pattern {pattern!r}")
+        self.trick = None
+        self._jump_t = 0.0
+        return TrickOut()
+
+
+TripodGait = Gait

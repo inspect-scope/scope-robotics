@@ -219,6 +219,8 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   <div class="row">
     <button id="stand">Stand</button>
     <button id="sit">Sit</button>
+    <button id="jump">Jump</button>
+    <button id="bounce">Bounce</button>
     <button id="torque">Torque</button>
     <button id="clear" style="margin-left:auto">Clear e-stop</button>
   </div>
@@ -338,7 +340,7 @@ const round2 = (v) => Math.round(v * 100) / 100;
 // Space and C stay global. WASD/QE only run while the pad block is focused.
 const DRIVE_KEYS = { w: "vy+", s: "vy-", d: "vx+", a: "vx-", q: "yaw+", e: "yaw-" };
 const HINT_IDLE = "click to capture keyboard";
-const HINT_LIVE = "WASD move · QE turn · Esc to release";
+const HINT_LIVE = "WASD move · QE turn · J jump · Esc to release";
 const held = new Set();
 let keysOwn = false;
 const driveEl = $("drive");
@@ -370,6 +372,7 @@ addEventListener("keydown", (ev) => {
   if (key === " ") { ev.preventDefault(); return estop(); }
   if (key === "escape" && keysOn()) { ev.preventDefault(); return driveEl.blur(); }
   if (key === "c" && !ev.repeat) { ev.preventDefault(); return capture(); }
+  if (key === "j" && keysOn() && !ev.repeat) { ev.preventDefault(); return send({ type: "jump" }); }
   if (!keysOn() || !DRIVE_KEYS[key]) return;
   held.add(key); ev.preventDefault(); applyKeys();
 });
@@ -398,6 +401,8 @@ $("estop").onclick = estop;
 $("clear").onclick = () => send({ type: "clear_estop" });
 $("stand").onclick = () => send({ type: "stand" });
 $("sit").onclick = () => send({ type: "sit" });
+$("jump").onclick = () => send({ type: "jump" });
+$("bounce").onclick = () => send({ type: "bounce", on: !$("bounce").classList.contains("on") });
 $("torque").onclick = () => send({ type: "torque", on: !$("torque").classList.contains("on") });
 
 /* ---------------- camera ---------------- */
@@ -430,16 +435,18 @@ async function capture() {
 $("capture").onclick = capture;
 
 /* ---------------- gait pattern ---------------- */
-function buildGaits(patterns, current) {
+function buildGaits(entries, current) {
   const box = $("gaits");
   box.textContent = "";
-  for (const name of patterns) {
+  const rows = (entries || []).map((e) => typeof e === "string" ? { id: e, chica: e } : e);
+  for (const row of rows) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = name;
-    btn.dataset.gait = name;
-    btn.classList.toggle("on", name === current);
-    btn.onclick = () => send({ type: "gait", pattern: name });
+    btn.textContent = row.id;
+    btn.title = row.chica ? `Chica ${row.chica}` : row.id;
+    btn.dataset.gait = row.id;
+    btn.classList.toggle("on", row.id === current);
+    btn.onclick = () => send({ type: "gait", pattern: row.id });
     box.appendChild(btn);
   }
 }
@@ -494,7 +501,7 @@ async function loadConfig() {
   setSlider("cycle_s", cfg.gait.cycle_s);
   setSlider("step_lift", cfg.gait.step_lift);
   setSlider("max_speed", cfg.gait.max_speed);
-  buildGaits(cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
+  buildGaits(cfg.gait.catalog || cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
   ["pitch", "roll", "yaw", "x", "y"].forEach((k) => setSlider(k, 0));
   $("feet").innerHTML = cfg.legs.map((n) =>
     `<span class="foot" id="foot-${n}"><span class="dot"></span>${n}</span>`).join("");
@@ -941,7 +948,10 @@ function draw3d(s) {
 }
 
 /* ---------------- render ---------------- */
-const STATE_COLOR = { walking: "--accent", standing: "--good", sitting: "--ink-2", off: "--muted", estop: "--critical" };
+const STATE_COLOR = {
+  walking: "--accent", jumping: "--accent", bouncing: "--accent",
+  standing: "--good", sitting: "--ink-2", off: "--muted", estop: "--critical",
+};
 // Status thresholds mirror WARN_VOL / WARN_CUR in the Chica config.
 function volt_status(v) {
   if (v === null) return ["--muted", "no data"];
@@ -993,6 +1003,7 @@ function render(s) {
   if (s.camera && !s.camera.ok) $("nocam").textContent = s.camera.error ? `camera: ${s.camera.error}` : "no camera";
 
   $("torque").classList.toggle("on", s.torque);
+  $("bounce").classList.toggle("on", s.trick === "bounce");
   $("estop").classList.toggle("latched", s.estopped);
   $("clear").disabled = !s.estopped;
   setSlider("height", s.height);

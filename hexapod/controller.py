@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 from .board import Servo2040
 from .config import JOINTS, Config
-from .gait import TripodGait, Velocity
+from .gait import Gait, TrickKind, Velocity
 from .kinematics import BodyPose, HexapodKinematics, JointAngles
 
 log = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ class Snapshot:
     connected: bool
     walking: bool
     gait: str
+    trick: Optional[str]
     height: float
     pose: Dict[str, float]
     velocity: Dict[str, float]
@@ -77,7 +78,7 @@ class Controller:
         self.config = config
         self.board = board
         self.kinematics = HexapodKinematics(config)
-        self.gait = TripodGait(config)
+        self.gait = Gait(config)
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -146,10 +147,19 @@ class Controller:
         self.set_height(self.config.stance.ride_height)
 
     def sit(self) -> None:
+        self.gait.reset()
         self.set_height(self.config.stance.sit_height)
 
     def set_pattern(self, pattern: str) -> None:
         self.gait.set_pattern(pattern)
+
+    def jump(self) -> None:
+        if not self._standing or self.board.estopped:
+            return
+        self.gait.start_jump()
+
+    def set_bounce(self, enabled: bool) -> None:
+        self.gait.set_bounce(enabled)
 
     def torque_off(self) -> None:
         self.board.set_torque(False)
@@ -227,6 +237,7 @@ class Controller:
         command = Velocity() if (settling or not standing) else raw.scaled(self.config)
 
         feet = self.gait.step(dt, command, height)
+        pose = self.gait.pose_overlay(pose)
         angles, limited = self.kinematics.solve_reporting(feet, pose)
         pulses = self.kinematics.pulse_frame(angles)
         self.board.set_frame(pulses)
@@ -263,8 +274,12 @@ class Controller:
             state = "estop"
         elif not torque:
             state = "off"
+        elif self.gait.trick == TrickKind.Jump:
+            state = "jumping"
         elif self.gait.walking:
             state = "walking"
+        elif self.gait.trick == TrickKind.Bounce:
+            state = "bouncing"
         elif standing:
             state = "standing"
         else:
@@ -276,6 +291,7 @@ class Controller:
             connected=self.board.connected,
             walking=self.gait.walking,
             gait=self.gait.pattern,
+            trick=self.gait.trick,
             height=round(height, 1),
             pose={k: round(v, 2) for k, v in asdict(pose).items()},
             velocity={
