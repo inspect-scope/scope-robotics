@@ -101,8 +101,13 @@ main { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 12px 
   border: 1px solid var(--grid); border-radius: var(--radius); overflow: hidden;
   aspect-ratio: 1; max-height: 400px; }
 .stage3d canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
-.stage3d .hint { position: absolute; left: 10px; right: 10px; bottom: 8px;
+.stage3d .hint { position: absolute; left: 10px; right: 88px; bottom: 8px;
   font-size: 11px; color: var(--muted); pointer-events: none; }
+.stage3d .compass {
+  position: absolute; top: 8px; right: 8px; z-index: 1;
+  min-width: 70px; padding: 6px 8px; text-align: center; line-height: 1.2;
+}
+.stage3d .compass .n { display: block; font-size: 10px; color: var(--muted); font-weight: 500; }
 
 .actuators { background: var(--surface); border: 1px solid var(--grid); border-radius: var(--radius); }
 .actuators .hd { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
@@ -154,6 +159,8 @@ main { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 12px 
 
 details { background: var(--surface); border: 1px solid var(--grid); border-radius: var(--radius); }
 summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 14px; }
+.gaits { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 14px 10px; }
+.gaits button.on { background: var(--accent); border-color: var(--accent); }
 .sliders { padding: 4px 14px 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px 18px; }
 .slider { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; }
 .slider label { font-size: 12px; color: var(--muted); }
@@ -230,7 +237,11 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     </div>
     <div class="stage3d" id="stage3d">
       <canvas id="bot3d" width="640" height="640" aria-label="Expected 3D pose from commanded servo pulses"></canvas>
-      <span class="hint">drag to orbit · green pads = foot switch closed</span>
+      <button class="compass" id="compass" type="button" title="cycle view mode">
+        <span id="compass-mode">orbit</span>
+        <span class="n" id="compass-n">N</span>
+      </button>
+      <span class="hint" id="view-hint">drag to orbit · green pads = foot switch closed</span>
     </div>
   </div>
 
@@ -258,6 +269,7 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
 
   <details>
     <summary>Posture &amp; gait</summary>
+    <div class="gaits" id="gaits"></div>
     <div class="sliders" id="sliders"></div>
   </details>
 </main>
@@ -417,6 +429,27 @@ async function capture() {
 }
 $("capture").onclick = capture;
 
+/* ---------------- gait pattern ---------------- */
+function buildGaits(patterns, current) {
+  const box = $("gaits");
+  box.textContent = "";
+  for (const name of patterns) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = name;
+    btn.dataset.gait = name;
+    btn.classList.toggle("on", name === current);
+    btn.onclick = () => send({ type: "gait", pattern: name });
+    box.appendChild(btn);
+  }
+}
+
+function markGait(name) {
+  document.querySelectorAll("#gaits button").forEach((btn) => {
+    btn.classList.toggle("on", btn.dataset.gait === name);
+  });
+}
+
 /* ---------------- sliders ---------------- */
 const SLIDERS = [
   { key: "height", label: "Ride height", unit: "mm", min: 40, max: 105, step: 1, msg: (v) => ({ type: "height", value: v }) },
@@ -461,6 +494,7 @@ async function loadConfig() {
   setSlider("cycle_s", cfg.gait.cycle_s);
   setSlider("step_lift", cfg.gait.step_lift);
   setSlider("max_speed", cfg.gait.max_speed);
+  buildGaits(cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
   ["pitch", "roll", "yaw", "x", "y"].forEach((k) => setSlider(k, 0));
   $("feet").innerHTML = cfg.legs.map((n) =>
     `<span class="foot" id="foot-${n}"><span class="dot"></span>${n}</span>`).join("");
@@ -484,21 +518,29 @@ function buildStance(names, coxae) {
   svg.textContent = "";
   stance.legs = {};
 
+  const field = node("g", { id: "stance-field" });
+  const bot = node("g", { id: "stance-bot" });
+  svg.append(field, bot);
+  stance.field = field;
+  stance.bot = bot;
+
   const ring = (r, dash) => node("circle", { cx: 0, cy: 0, r, fill: "none",
     stroke: "var(--grid)", "stroke-width": 1.5, "stroke-dasharray": dash });
-  svg.append(ring(220, "4 8"));
+  field.append(ring(220, "4 8"));
+  field.append(node("text", { x: 0, y: -232, "font-size": 22, fill: "var(--muted)", "text-anchor": "middle" }));
+  field.lastChild.textContent = "N";
 
   // Body outline through the coxa centres, drawn front-first so the shape reads.
   const ordered = [...names].sort((a, b) => Math.atan2(coxae[b][1], coxae[b][0]) - Math.atan2(coxae[a][1], coxae[a][0]));
-  svg.append(node("polygon", {
+  bot.append(node("polygon", {
     points: ordered.map((n) => `${coxae[n][0]},${-coxae[n][1]}`).join(" "),
     fill: "var(--surface)", stroke: "var(--baseline)", "stroke-width": 2,
   }));
-  svg.append(node("polygon", { points: "0,-118 -13,-96 13,-96", fill: "var(--baseline)" }));  // nose
+  bot.append(node("polygon", { points: "0,-118 -13,-96 13,-96", fill: "var(--baseline)" }));  // nose
 
   const heading = node("line", { x1: 0, y1: 0, x2: 0, y2: 0,
     stroke: "var(--accent)", "stroke-width": 4, "stroke-linecap": "round" });
-  svg.append(heading);
+  bot.append(heading);
   stance.heading = heading;
 
   for (const name of names) {
@@ -512,7 +554,7 @@ function buildStance(names, coxae) {
     const padB = node("circle", pad);
     const tag = node("text", { "font-size": 30, fill: "var(--muted)", "text-anchor": "middle" });
     tag.textContent = name;
-    svg.append(bone, ghost, rod, padA, padB, tag);
+    bot.append(bone, ghost, rod, padA, padB, tag);
     stance.legs[name] = { bone, ghost, rod, padA, padB, tag, coxa: [cx, cy] };
   }
   stance.ready = true;
@@ -554,6 +596,17 @@ function drawStance(s) {
   stance.heading.setAttribute("x2", s.velocity.vx * scale);
   stance.heading.setAttribute("y2", -s.velocity.vy * scale);
   stance.heading.setAttribute("opacity", Math.hypot(s.velocity.vx, s.velocity.vy) > 2 ? 1 : 0);
+
+  if (bot3d.mode === ViewMode.World) {
+    stance.bot.setAttribute("transform", `rotate(${-headingDeg})`);
+    stance.field.removeAttribute("transform");
+  } else if (bot3d.mode === ViewMode.Follow) {
+    stance.bot.removeAttribute("transform");
+    stance.field.setAttribute("transform", `rotate(${headingDeg})`);
+  } else {
+    stance.bot.removeAttribute("transform");
+    stance.field.removeAttribute("transform");
+  }
 }
 
 /* ---------------- servo actuation table ---------------- */
@@ -604,7 +657,44 @@ function drawActuators(s) {
 }
 
 /* ---------------- 3d expected pose ---------------- */
-const bot3d = { yaw: 0.7, pitch: 0.85, dist: 720, drag: false, last: [0, 0], state: null };
+const ViewMode = Object.freeze({ Orbit: "orbit", World: "world", Follow: "follow" });
+const VIEW_CYCLE = [ViewMode.Orbit, ViewMode.World, ViewMode.Follow];
+const VIEW_HINT = {
+  [ViewMode.Orbit]: "orbit · drag to look around · green pads = switch closed",
+  [ViewMode.World]: "world · grid fixed, robot turns · QE to see it",
+  [ViewMode.Follow]: "follow · heading up, grid turns",
+};
+const bot3d = {
+  yaw: 0.7, pitch: 0.85, dist: 720, drag: false, last: [0, 0], state: null,
+  mode: ViewMode.Orbit, spin: 0,
+};
+let headingDeg = 0;
+let headingAt = 0;
+
+function headingPoint(p, deg) {
+  if (!deg) return p;
+  const t = deg * Math.PI / 180;
+  const c = Math.cos(t), s = Math.sin(t);
+  return [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
+}
+
+function tickHeading(s) {
+  const now = performance.now();
+  const dt = headingAt ? Math.min(0.05, (now - headingAt) / 1000) : 0;
+  headingAt = now;
+  const parked = !s || s.state === "sitting" || s.state === "off" || s.state === "estop";
+  if (parked) {
+    headingDeg = 0;
+    return;
+  }
+  headingDeg += ((s.velocity && s.velocity.yaw_rate) || 0) * dt;
+}
+
+function syncCompass() {
+  $("compass-mode").textContent = bot3d.mode;
+  $("compass-n").textContent = `${((headingDeg % 360) + 360) % 360 | 0}°`;
+  $("view-hint").textContent = VIEW_HINT[bot3d.mode];
+}
 
 function vsub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
 function vadd(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
@@ -629,7 +719,10 @@ function posePoint(p, pose) {
 }
 
 function camPoint(p) {
-  const cy = Math.cos(bot3d.yaw), sy = Math.sin(bot3d.yaw);
+  if (bot3d.spin) p = headingPoint(p, bot3d.spin);
+  let yaw = bot3d.yaw;
+  if (bot3d.mode === ViewMode.Follow) yaw -= headingDeg * Math.PI / 180;
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
   const cp = Math.cos(bot3d.pitch), sp = Math.sin(bot3d.pitch);
   const x1 = p[0] * cy - p[1] * sy;
   const y1 = p[0] * sy + p[1] * cy;
@@ -716,6 +809,13 @@ function init3d() {
     draw3d(bot3d.state);
   };
   new ResizeObserver(fit).observe(stage);
+  $("compass").onclick = () => {
+    const i = VIEW_CYCLE.indexOf(bot3d.mode);
+    bot3d.mode = VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length];
+    syncCompass();
+    draw3d(bot3d.state);
+    if (bot3d.state) drawStance(bot3d.state);
+  };
   canvas.addEventListener("pointerdown", (ev) => {
     bot3d.drag = true;
     bot3d.last = [ev.clientX, ev.clientY];
@@ -738,6 +838,7 @@ function init3d() {
     bot3d.dist = clamp(bot3d.dist + ev.deltaY * 0.55, 420, 1400);
     draw3d(bot3d.state);
   }, { passive: false });
+  syncCompass();
   fit();
 }
 
@@ -752,6 +853,7 @@ function draw3d(s) {
 
   const faces = [];
   const pose = (s && s.pose) || {};
+  bot3d.spin = 0;
 
   for (let x = -240; x <= 240; x += 40) {
     const a = project3d([x, -240, -0.2], w, h), b = project3d([x, 240, -0.2], w, h);
@@ -762,6 +864,7 @@ function draw3d(s) {
     ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.stroke();
   }
 
+  bot3d.spin = bot3d.mode === ViewMode.World ? headingDeg : 0;
   pushBox(faces, boxAt(0, 0, 34, 118, 148, 88, pose), "#2a2a28");
 
   const limited = new Set((s && s.limited_legs) || []);
@@ -872,6 +975,7 @@ function render(s) {
 
   $("state").textContent = s.state;
   $("state-icon").style.background = `var(${STATE_COLOR[s.state] || "--muted"})`;
+  markGait(s.gait);
   const speed = Math.hypot(s.velocity.vx, s.velocity.vy);
   $("speed").textContent = `${speed.toFixed(0)} mm/s · ${s.velocity.yaw_rate.toFixed(0)} °/s`;
   $("tele-age").textContent = s.telemetry_age_s < 0 ? "telemetry --" : `telemetry ${s.telemetry_age_s.toFixed(1)} s ago`;
@@ -883,6 +987,8 @@ function render(s) {
   $("imu-state").textContent = (imu.ok ? `gyro ${(imu.gyro || []).map((g) => g.toFixed(0)).join(" ")} °/s`
     : imu.calibrating ? "calibrating, hold still" : imu.error ? "offline" : "no data")
     + (imu.read_errors ? ` · ${imu.read_errors} bus errors, ${imu.read_failures} unrecovered` : "");
+  tickHeading(s);
+  syncCompass();
   setLive(!!(s.camera && s.camera.ok));
   if (s.camera && !s.camera.ok) $("nocam").textContent = s.camera.error ? `camera: ${s.camera.error}` : "no camera";
 

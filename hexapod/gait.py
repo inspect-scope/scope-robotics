@@ -1,8 +1,11 @@
-"""Tripod gait generator.
+"""Gait generator.
 
-Produces ground-frame foot targets from a body velocity command. Two groups of
-three legs alternate: while one group is on the ground pushing the body along,
-the other is in the air returning to the front of its stroke.
+Produces ground-frame foot targets from a body velocity command. Patterns
+share the same stroke math (`v + omega x r`) and differ by phase layout:
+
+  tripod  two groups of three, 50/50 stance (Chica walk3)
+  ripple  one leg at a time, 5/6 stance (Chica walk1)
+  wave    one leg around the body, 5/6 stance (Chica walkwave)
 
 Per leg the ground velocity is `v_body + omega x r`, where `r` is the leg's
 neutral foot position, so translation and turning compose without a special
@@ -19,6 +22,15 @@ from .config import Config
 
 Vec3 = Tuple[float, float, float]
 
+
+class GaitKind:
+    Tripod = "tripod"
+    Ripple = "ripple"
+    Wave = "wave"
+
+
+GAIT_KINDS = (GaitKind.Tripod, GaitKind.Ripple, GaitKind.Wave)
+WAVE_ORDER = ("R1", "R2", "R3", "L3", "L2", "L1")
 STANCE_FRACTION = 0.5  # tripod: half the cycle on the ground, half in the air
 _STOP_EPSILON = 1.0  # mm of remaining stroke below which we call it stopped
 
@@ -66,15 +78,20 @@ def _step(current: float, target: float, max_delta: float) -> float:
 
 
 class TripodGait:
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, pattern: str = GaitKind.Tripod):
         self.config = config
         self.groups: List[List[str]] = config.tripod_groups
-        self._group_of: Dict[str, int] = {
-            name: index for index, group in enumerate(self.groups) for name in group
-        }
         self.phase = 0.0
         self.velocity = Velocity()
         self.walking = False
+        self.set_pattern(pattern)
+
+    def set_pattern(self, pattern: str) -> None:
+        if pattern not in GAIT_KINDS:
+            raise ValueError(f"unknown gait pattern {pattern!r}")
+        self.pattern = pattern
+        self._offset, self.stance_fraction = _phase_layout(pattern, self.groups)
+        self.phase = 0.0
 
     def reset(self) -> None:
         self.phase = 0.0
@@ -84,7 +101,7 @@ class TripodGait:
     def strokes(self, velocity: Velocity) -> Dict[str, Tuple[float, float]]:
         """Ground displacement each foot covers during one stance phase, per leg."""
         s = self.config.stance
-        stance_time = s.cycle_s * STANCE_FRACTION
+        stance_time = s.cycle_s * self.stance_fraction
         omega = math.radians(velocity.yaw_rate)
         out: Dict[str, Tuple[float, float]] = {}
         for name, leg in self.config.legs.items():
@@ -124,22 +141,42 @@ class TripodGait:
             self.walking = True
             self.phase = (self.phase + dt / s.cycle_s) % 1.0
 
+        swing_fraction = 1.0 - self.stance_fraction
         feet: Dict[str, Vec3] = {}
         for name, leg in self.config.legs.items():
             nx, ny = leg.neutral_xy
             sx, sy = strokes[name]
-            leg_phase = (self.phase + 0.5 * self._group_of[name]) % 1.0
-            if leg_phase < STANCE_FRACTION:
+            leg_phase = (self.phase + self._offset[name]) % 1.0
+            if leg_phase < swing_fraction:
                 # Swing: return to the front of the stroke, lifting over a sine arc.
-                progress = leg_phase / STANCE_FRACTION
+                progress = leg_phase / swing_fraction
                 along = progress - 0.5
                 lift = step_lift * math.sin(math.pi * progress) if biggest >= _STOP_EPSILON else 0.0
             else:
-                progress = (leg_phase - STANCE_FRACTION) / (1.0 - STANCE_FRACTION)
+                progress = (leg_phase - swing_fraction) / self.stance_fraction
                 along = 0.5 - progress
                 lift = 0.0
             feet[name] = (nx + sx * along, ny + sy * along, -height + lift)
         return feet
 
     def group_in_swing(self) -> int:
-        return 0 if self.phase < STANCE_FRACTION else 1
+        return 0 if self.phase < (1.0 - self.stance_fraction) else 1
+
+
+def _phase_layout(pattern: str, groups: List[List[str]]) -> Tuple[Dict[str, float], float]:
+    """Per-leg phase offset in [0, 1) and the stance duty cycle."""
+    if pattern == GaitKind.Tripod:
+        offsets = {name: 0.5 * index for index, group in enumerate(groups) for name in group}
+        return offsets, STANCE_FRACTION
+
+    if pattern == GaitKind.Ripple:
+        # Zip the two tripods so lift stays balanced: L1, R1, R2, L2, L3, R3.
+        order = [name for pair in zip(*groups) for name in pair]
+        n = len(order)
+        return {name: i / n for i, name in enumerate(order)}, 1.0 - 1.0 / n
+
+    if pattern == GaitKind.Wave:
+        n = len(WAVE_ORDER)
+        return {name: i / n for i, name in enumerate(WAVE_ORDER)}, 1.0 - 1.0 / n
+
+    raise ValueError(f"unknown gait pattern {pattern!r}")

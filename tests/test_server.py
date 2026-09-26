@@ -201,6 +201,16 @@ def test_websocket_drives_the_robot(client):
         assert socket.receive_json()["type"] == "state"
 
 
+def test_gait_pattern_switches(client):
+    with client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "gait", "pattern": "ripple"})
+        assert _wait_for(lambda: client.controller.snapshot().gait == "ripple")
+        assert "ripple" in client.get("/api/config").json()["gait"]["patterns"]
+        socket.send_json({"type": "gait", "pattern": "walk3"})
+        time.sleep(0.1)
+        assert client.controller.snapshot().gait == "ripple"
+
+
 def test_pose_and_gait_values_are_clamped(client):
     with client.websocket_connect("/ws") as socket:
         socket.send_json({"type": "pose", "roll": 90, "x": -500})

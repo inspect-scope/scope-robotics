@@ -45,6 +45,7 @@ class Snapshot:
     estopped: bool
     connected: bool
     walking: bool
+    gait: str
     height: float
     pose: Dict[str, float]
     velocity: Dict[str, float]
@@ -146,6 +147,9 @@ class Controller:
 
     def sit(self) -> None:
         self.set_height(self.config.stance.sit_height)
+
+    def set_pattern(self, pattern: str) -> None:
+        self.gait.set_pattern(pattern)
 
     def torque_off(self) -> None:
         self.board.set_torque(False)
@@ -271,6 +275,7 @@ class Controller:
             estopped=estopped,
             connected=self.board.connected,
             walking=self.gait.walking,
+            gait=self.gait.pattern,
             height=round(height, 1),
             pose={k: round(v, 2) for k, v in asdict(pose).items()},
             velocity={

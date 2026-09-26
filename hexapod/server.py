@@ -26,7 +26,7 @@ from .board import BoardError
 from .camera import Camera, CameraError
 from .config import Config
 from .controller import COMMAND_TTL, POSE_LIMITS, Controller
-from .gait import Velocity
+from .gait import GAIT_KINDS, Velocity
 from .state import RobotState
 
 log = logging.getLogger(__name__)
@@ -112,7 +112,13 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
             {
                 "pose_limits": POSE_LIMITS,
                 "height": {"min": s.sit_height, "max": 105.0, "default": s.ride_height},
-                "gait": {"cycle_s": s.cycle_s, "step_lift": s.step_lift, "max_speed": s.max_speed},
+                "gait": {
+                    "cycle_s": s.cycle_s,
+                    "step_lift": s.step_lift,
+                    "max_speed": s.max_speed,
+                    "pattern": state.controller.gait.pattern,
+                    "patterns": list(GAIT_KINDS),
+                },
                 "legs": list(config.leg_order),
                 "coxae": {name: list(leg.coxa_xy) for name, leg in config.legs.items()},
                 "yaws": {name: leg.yaw_deg for name, leg in config.legs.items()},
@@ -299,6 +305,11 @@ def _handle(controller: Controller, config: Config, message: Dict[str, Any]) -> 
     elif kind == "clear_estop":
         controller.clear_estop()
     elif kind == "gait":
+        if "pattern" in message:
+            try:
+                controller.set_pattern(str(message["pattern"]))
+            except ValueError:
+                log.warning("bad gait pattern %r", message["pattern"])
         _tune(config, message)
     elif kind == "ping":
         pass
