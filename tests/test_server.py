@@ -63,8 +63,16 @@ def test_pages_and_state_are_served(client):
     assert status.status_code == 200 and b"STOP" in status.content
     body = client.get("/api/state").json()
     assert body["state"] == "off"
-    assert set(body["feet"]) == set(body["coxae"])
-    assert {"imu", "camera", "ip", "uptime_s", "last_error"} <= set(body)
+    assert set(body["feet"]) == set(body["coxae"]) == set(body["joints"]) == set(body["chains"])
+    assert {"imu", "camera", "ip", "uptime_s", "last_error", "actuators", "pulses", "touch_volts"} <= set(body)
+    assert len(body["pulses"]) == 18
+    assert all(len(points) == 4 and len(points[0]) == 3 for points in body["chains"].values())
+    l1 = body["actuators"]["L1"]["coxa"]
+    assert {"ch", "us", "joint", "servo"} <= set(l1)
+    cfg = client.get("/api/config").json()
+    assert cfg["servos"]["L1"]["coxa"]["channel"] == l1["ch"]
+    assert cfg["pulse_us"] == [600, 2400]
+    assert cfg["geometry"]["coxa_len"] == 43
 
 
 def test_stop_and_estop_work_over_plain_http(client):

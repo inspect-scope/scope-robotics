@@ -24,7 +24,7 @@ from pydantic import BaseModel
 
 from .board import BoardError
 from .camera import Camera, CameraError
-from .config import JOINTS, Config
+from .config import Config
 from .controller import COMMAND_TTL, POSE_LIMITS, Controller
 from .gait import Velocity
 from .state import RobotState
@@ -107,6 +107,7 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
     @app.get("/api/config")
     async def config_view() -> JSONResponse:
         s = config.stance
+        g = config.geometry
         return JSONResponse(
             {
                 "pose_limits": POSE_LIMITS,
@@ -114,12 +115,19 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                 "gait": {"cycle_s": s.cycle_s, "step_lift": s.step_lift, "max_speed": s.max_speed},
                 "legs": list(config.leg_order),
                 "coxae": {name: list(leg.coxa_xy) for name, leg in config.legs.items()},
-                # channel and direction per servo, so a tool can name what it sees moving
-                "servos": {name: {joint: {"channel": leg.servos[joint].channel,
-                                          "direction": leg.servos[joint].direction}
-                                  for joint in JOINTS}
-                           for name, leg in config.legs.items()},
+                "yaws": {name: leg.yaw_deg for name, leg in config.legs.items()},
+                "geometry": {
+                    "coxa_len": g.coxa_len,
+                    "femur_len": g.femur_len,
+                    "tibia_len": g.tibia_len,
+                    "leg_connection_z": g.leg_connection_z,
+                },
                 "pulse_us": list(config.limits.pulse_us),
+                "servos": {
+                    name: {joint: {"channel": cal.channel, "direction": cal.direction}
+                           for joint, cal in leg.servos.items()}
+                    for name, leg in config.legs.items()
+                },
                 "camera": {"enabled": state.camera is not None, "lores": list(config.camera.lores),
                            "still": list(config.camera.still)},
             }

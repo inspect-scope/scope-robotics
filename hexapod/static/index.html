@@ -97,6 +97,32 @@ main { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 12px 
 #capture.busy { opacity: .6; }
 .stage { flex: 1 1 260px; display: flex; align-items: center; justify-content: center; min-height: 210px; }
 .stage svg { height: 100%; width: auto; max-width: 100%; max-height: 340px; }
+.stage3d { flex: 1 1 280px; min-width: 0; position: relative; background: var(--surface);
+  border: 1px solid var(--grid); border-radius: var(--radius); overflow: hidden;
+  aspect-ratio: 1; max-height: 400px; }
+.stage3d canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+.stage3d .hint { position: absolute; left: 10px; right: 10px; bottom: 8px;
+  font-size: 11px; color: var(--muted); pointer-events: none; }
+
+.actuators { background: var(--surface); border: 1px solid var(--grid); border-radius: var(--radius); }
+.actuators .hd { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 10px 14px; border-bottom: 1px solid var(--grid); align-items: baseline; }
+.actuators .hd .title { font-size: 14px; color: var(--ink-2); }
+.actuators .hd .note { font-size: 12px; color: var(--muted); }
+.act-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.act-leg { padding: 10px 14px 12px; border-right: 1px solid var(--grid); border-bottom: 1px solid var(--grid); }
+.act-leg .name { font-weight: 600; margin-bottom: 6px; display: flex; justify-content: space-between;
+  align-items: baseline; gap: 8px; }
+.act-leg .touch { font-size: 11px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums; }
+.act-leg.limited .name { color: var(--warning); }
+.act-row { display: grid; grid-template-columns: 44px 28px 1fr auto; gap: 6px 8px; align-items: center;
+  font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-2); margin: 5px 0; }
+.act-row .ch { color: var(--muted); }
+.act-row .readout { color: var(--muted); white-space: nowrap; }
+.act-row .pwm { height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; position: relative; }
+.act-row .pwm > i { display: block; height: 100%; width: 0; background: var(--accent); }
+.act-row .pwm::after { content: ""; position: absolute; top: 0; bottom: 0; left: 47.4%; width: 1px;
+  background: var(--baseline); } /* 1500us mark inside 600..2400 */
 .pads { display: flex; gap: 24px; justify-content: space-between; align-items: center; }
 .pad-wrap { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .pad-wrap .cap { font-size: 12px; color: var(--muted); }
@@ -196,6 +222,10 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     <div class="stage">
       <svg id="stance" viewBox="-300 -300 600 600" aria-label="Top-down view of foot positions"></svg>
     </div>
+    <div class="stage3d" id="stage3d">
+      <canvas id="bot3d" width="640" height="640" aria-label="Expected 3D pose from commanded servo pulses"></canvas>
+      <span class="hint">drag to orbit · expected pose from commanded pulses</span>
+    </div>
   </div>
 
   <div class="pads">
@@ -208,6 +238,14 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
       <span class="cap">Turn &middot; Q E</span>
     </div>
   </div>
+
+  <section class="actuators">
+    <div class="hd">
+      <span class="title">Servo actuation</span>
+      <span class="note" id="act-note">commanded SET pulses. board reports pack V, rail A and touch, not servo angle.</span>
+    </div>
+    <div class="act-grid" id="actuators"></div>
+  </section>
 
   <details>
     <summary>Posture &amp; gait</summary>
@@ -386,6 +424,8 @@ async function loadConfig() {
   $("feet").innerHTML = cfg.legs.map((n) =>
     `<span class="foot" id="foot-${n}"><span class="dot"></span>${n}</span>`).join("");
   buildStance(cfg.legs, cfg.coxae);
+  buildActuators(cfg.legs, cfg.servos);
+  actLimits = cfg.pulse_us || [600, 2400];
 }
 
 /* ---------------- top-down stance view ---------------- */
@@ -459,6 +499,244 @@ function drawStance(s) {
   stance.heading.setAttribute("opacity", Math.hypot(s.velocity.vx, s.velocity.vy) > 2 ? 1 : 0);
 }
 
+/* ---------------- servo actuation table ---------------- */
+const JOINTS = ["coxa", "femur", "tibia"];
+let actLimits = [600, 2400];
+
+function buildActuators(legs, servos) {
+  const grid = $("actuators");
+  grid.textContent = "";
+  for (const name of legs) {
+    const card = document.createElement("div");
+    card.className = "act-leg";
+    card.id = "act-" + name;
+    const rows = JOINTS.map((joint) => {
+      const ch = servos[name][joint].channel;
+      return `<div class="act-row" id="act-${name}-${joint}">
+        <span>${joint}</span><span class="ch">P${ch}</span>
+        <span class="pwm"><i></i></span>
+        <span class="readout">--</span>
+      </div>`;
+    }).join("");
+    card.innerHTML = `<div class="name"><span>${name}</span><span class="touch" id="touch-${name}"></span></div>${rows}`;
+    grid.appendChild(card);
+  }
+}
+
+function drawActuators(s) {
+  const [lo, hi] = actLimits;
+  for (const [name, joints] of Object.entries(s.actuators || {})) {
+    const touch = (s.touch_volts || {})[name];
+    const label = $("touch-" + name);
+    if (label) label.textContent = touch == null ? "" : `${touch.toFixed(2)} V touch`;
+    const limited = (s.limited_legs || []).includes(name);
+    $("act-" + name)?.classList.toggle("limited", limited);
+    for (const [joint, row] of Object.entries(joints)) {
+      const el = $("act-" + name + "-" + joint);
+      if (!el) continue;
+      el.querySelector(".pwm > i").style.width = clamp((row.us - lo) / (hi - lo), 0, 1) * 100 + "%";
+      el.querySelector(".pwm > i").style.background = limited ? "var(--warning)" : "var(--accent)";
+      el.querySelector(".readout").textContent = `${row.us} µs  ${row.joint.toFixed(1)}°`;
+    }
+  }
+}
+
+/* ---------------- 3d expected pose ---------------- */
+const bot3d = { yaw: 0.7, pitch: 0.85, dist: 720, drag: false, last: [0, 0], state: null };
+
+function vsub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function vadd(a, b) { return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]; }
+function vscale(a, s) { return [a[0] * s, a[1] * s, a[2] * s]; }
+function vdot(a, b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+function vcross(a, b) {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+function vlen(a) { return Math.hypot(a[0], a[1], a[2]); }
+function vnorm(a) { const n = vlen(a) || 1; return [a[0] / n, a[1] / n, a[2] / n]; }
+
+function posePoint(p, pose) {
+  const roll = (pose.roll || 0) * Math.PI / 180;
+  const pitch = (pose.pitch || 0) * Math.PI / 180;
+  const yaw = (pose.yaw || 0) * Math.PI / 180;
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const cr = Math.cos(roll), sr = Math.sin(roll);
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  let x = p[0], y = cp * p[1] - sp * p[2], z = sp * p[1] + cp * p[2];
+  const x2 = cr * x + sr * z, z2 = -sr * x + cr * z;
+  return [cy * x2 - sy * y + (pose.x || 0), sy * x2 + cy * y + (pose.y || 0), z2 + (pose.z || 0)];
+}
+
+function camPoint(p) {
+  const cy = Math.cos(bot3d.yaw), sy = Math.sin(bot3d.yaw);
+  const cp = Math.cos(bot3d.pitch), sp = Math.sin(bot3d.pitch);
+  const x1 = p[0] * cy - p[1] * sy;
+  const y1 = p[0] * sy + p[1] * cy;
+  return [x1, y1 * sp + p[2] * cp, y1 * cp - p[2] * sp];
+}
+
+function project3d(p, w, h) {
+  const r = camPoint(p);
+  const z = r[2] + bot3d.dist;
+  const f = 1.2 * Math.min(w, h);
+  return [w / 2 + r[0] * f / z, h / 2 - r[1] * f / z, z];
+}
+
+function shadeHex(hex, normal) {
+  const light = vnorm([0.35, 0.2, 0.9]);
+  const d = 0.55 + 0.45 * Math.max(0, vdot(vnorm(normal), light));
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  return `rgb(${Math.round(r * d)},${Math.round(g * d)},${Math.round(b * d)})`;
+}
+
+function pushFace(faces, world, idxs, color) {
+  const a = world[idxs[0]], b = world[idxs[1]], c = world[idxs[2]];
+  const normal = vcross(vsub(b, a), vsub(c, a));
+  if (camPoint(normal)[2] > 0) return;
+  const depth = idxs.reduce((sum, i) => sum + camPoint(world[i])[2], 0) / idxs.length;
+  faces.push({ world, idxs, color: shadeHex(color, normal), depth });
+}
+
+const BOX_FACES = [
+  [0, 1, 3, 2], [4, 6, 7, 5], [0, 4, 5, 1], [2, 3, 7, 6], [0, 2, 6, 4], [1, 5, 7, 3],
+];
+
+function pushBox(faces, corners, color) {
+  for (const idxs of BOX_FACES) pushFace(faces, corners, idxs, color);
+}
+
+function boxAt(cx, cy, cz, sx, sy, sz, pose) {
+  const hx = sx / 2, hy = sy / 2, hz = sz / 2;
+  const out = [];
+  for (const x of [-hx, hx])
+    for (const y of [-hy, hy])
+      for (const z of [-hz, hz])
+        out.push(posePoint([cx + x, cy + y, cz + z], pose));
+  return out;
+}
+
+function beamAt(a, b, thick) {
+  const along = vnorm(vsub(b, a));
+  const helper = Math.abs(along[2]) < 0.9 ? [0, 0, 1] : [1, 0, 0];
+  const u = vnorm(vcross(along, helper));
+  const v = vnorm(vcross(along, u));
+  const hu = vscale(u, thick / 2), hv = vscale(v, thick / 2);
+  const corners = [];
+  for (const end of [a, b])
+    for (const su of [-1, 1])
+      for (const sv of [-1, 1])
+        corners.push(vadd(end, vadd(vscale(hu, su), vscale(hv, sv))));
+  return corners;
+}
+
+function init3d() {
+  const canvas = $("bot3d");
+  const stage = $("stage3d");
+  const fit = () => {
+    const r = stage.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = Math.max(1, Math.floor(r.width * dpr));
+    canvas.height = Math.max(1, Math.floor(r.height * dpr));
+    draw3d(bot3d.state);
+  };
+  new ResizeObserver(fit).observe(stage);
+  canvas.addEventListener("pointerdown", (ev) => {
+    bot3d.drag = true;
+    bot3d.last = [ev.clientX, ev.clientY];
+    canvas.setPointerCapture(ev.pointerId);
+    canvas.style.cursor = "grabbing";
+  });
+  canvas.addEventListener("pointermove", (ev) => {
+    if (!bot3d.drag) return;
+    const dx = ev.clientX - bot3d.last[0], dy = ev.clientY - bot3d.last[1];
+    bot3d.last = [ev.clientX, ev.clientY];
+    bot3d.yaw -= dx * 0.01;
+    bot3d.pitch = clamp(bot3d.pitch + dy * 0.01, 0.18, 1.45);
+    draw3d(bot3d.state);
+  });
+  const endDrag = () => { bot3d.drag = false; canvas.style.cursor = "grab"; };
+  canvas.addEventListener("pointerup", endDrag);
+  canvas.addEventListener("pointercancel", endDrag);
+  canvas.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    bot3d.dist = clamp(bot3d.dist + ev.deltaY * 0.55, 420, 1400);
+    draw3d(bot3d.state);
+  }, { passive: false });
+  fit();
+}
+
+function draw3d(s) {
+  const canvas = $("bot3d");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  bot3d.state = s;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#0d0d0d";
+  ctx.fillRect(0, 0, w, h);
+
+  const faces = [];
+  const pose = (s && s.pose) || {};
+
+  for (let x = -240; x <= 240; x += 40) {
+    const a = project3d([x, -240, -0.2], w, h), b = project3d([x, 240, -0.2], w, h);
+    const c = project3d([-240, x, -0.2], w, h), d = project3d([240, x, -0.2], w, h);
+    ctx.strokeStyle = "#2c2c2a";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(c[0], c[1]); ctx.lineTo(d[0], d[1]); ctx.stroke();
+  }
+
+  pushBox(faces, boxAt(0, 0, 34, 118, 148, 88, pose), "#2a2a28");
+  pushBox(faces, boxAt(0, 62, 80, 24, 18, 8, pose), "#3a3a36");
+
+  const limited = new Set((s && s.limited_legs) || []);
+  const contacts = (s && s.contacts) || {};
+  const height = s ? s.height : 80;
+  const bones = [];
+  for (const [name, points] of Object.entries((s && s.chains) || {})) {
+    const [origin, femur, knee, foot] = points;
+    const lift = Math.max(0, foot[2] + height);
+    const down = contacts[name] && lift < 1;
+    const bone = limited.has(name) ? "#fab219" : "#f0eee6";
+    const servo = "#3d4a52";
+    pushBox(faces, beamAt(origin, femur, 18), bone);
+    pushBox(faces, beamAt(femur, knee, 20), bone);
+    pushBox(faces, beamAt(knee, foot, 14), bone);
+    pushBox(faces, boxAt(origin[0], origin[1], origin[2], 24, 24, 24, {}), servo);
+    pushBox(faces, boxAt(femur[0], femur[1], femur[2], 26, 22, 22, {}), servo);
+    pushBox(faces, boxAt(knee[0], knee[1], knee[2], 24, 20, 20, {}), servo);
+    const tip = down ? "#0ca30c" : limited.has(name) ? "#fab219" : "#3987e5";
+    pushBox(faces, boxAt(foot[0], foot[1], foot[2], 12, 12, 10, {}), tip);
+    bones.push({ points, color: limited.has(name) ? "#fab219" : "#c8c6bc" });
+  }
+
+  faces.sort((a, b) => b.depth - a.depth);
+  for (const face of faces) {
+    const pts = face.idxs.map((i) => project3d(face.world[i], w, h));
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+    ctx.fillStyle = face.color;
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,.28)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (const bone of bones) {
+    const pts = bone.points.map((p) => project3d(p, w, h));
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.strokeStyle = bone.color;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+  }
+}
+
 /* ---------------- render ---------------- */
 const STATE_COLOR = { walking: "--accent", standing: "--good", sitting: "--ink-2", off: "--muted", estop: "--critical" };
 // Status thresholds mirror WARN_VOL / WARN_CUR in the Chica config.
@@ -526,10 +804,13 @@ function render(s) {
   if (s.estopped) problems.push(s.safety_trip ? `safety trip: ${s.safety_trip}. Find the cause before clearing` : "e-stop latched, clear it before standing");
   if (imu.error && !imu.ok && !imu.calibrating) problems.push(`imu: ${imu.error}`);
   drawStance(s);
+  drawActuators(s);
+  draw3d(s);
   $("banner").classList.toggle("show", problems.length > 0);
   $("banner-text").textContent = problems.join(" · ");
 }
 
+init3d();
 connect();
 </script>
 </body>
