@@ -21,6 +21,7 @@ from .board import Servo2040
 from .config import JOINTS, Config
 from .gait import Gait, TrickKind, Velocity
 from .kinematics import BodyPose, HexapodKinematics, JointAngles
+from .mode import StanceMode, lookup_mode, modes_for
 
 log = logging.getLogger(__name__)
 
@@ -46,8 +47,12 @@ class Snapshot:
     connected: bool
     walking: bool
     gait: str
+    mode: str
     trick: Optional[str]
     height: float
+    cycle_s: float
+    step_lift: float
+    max_speed: float
     pose: Dict[str, float]
     velocity: Dict[str, float]
     active_source: Optional[str]
@@ -79,6 +84,8 @@ class Controller:
         self.board = board
         self.kinematics = HexapodKinematics(config)
         self.gait = Gait(config)
+        self.modes = modes_for(config.stance)
+        self.mode = StanceMode.Normal
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -152,6 +159,15 @@ class Controller:
 
     def set_pattern(self, pattern: str) -> None:
         self.gait.set_pattern(pattern)
+
+    def set_mode(self, name: str) -> None:
+        spec = lookup_mode(self.modes, name)
+        if spec is None:
+            raise ValueError(f"unknown stance mode {name!r}")
+        spec.apply(self.config.stance)
+        self.mode = spec.kind
+        if self._standing and self.gait.trick != TrickKind.Jump:
+            self.set_height(spec.ride_height)
 
     def jump(self) -> None:
         if not self._standing or self.board.estopped:
@@ -291,8 +307,12 @@ class Controller:
             connected=self.board.connected,
             walking=self.gait.walking,
             gait=self.gait.pattern,
+            mode=self.mode,
             trick=self.gait.trick,
             height=round(height, 1),
+            cycle_s=round(self.config.stance.cycle_s, 3),
+            step_lift=round(self.config.stance.step_lift, 1),
+            max_speed=round(self.config.stance.max_speed, 1),
             pose={k: round(v, 2) for k, v in asdict(pose).items()},
             velocity={
                 "vx": round(self.gait.velocity.vx, 1),

@@ -139,7 +139,6 @@ WALK_KINDS = (
     GaitKind.Ripple15,
     GaitKind.Wave,
 )
-GAIT_KINDS = WALK_KINDS  # older import name
 
 
 def walk_catalog(tripod_groups: List[List[str]]) -> List[Dict[str, str]]:
@@ -277,9 +276,6 @@ class Gait:
         if self.trick is None:
             return pose
         return replace(pose, z=pose.z + self._body_z)
-
-    def group_in_swing(self) -> int:
-        return 0 if self.phase < (1.0 - self.stance_fraction) else 1
 
     def _advance_trick(self, dt: float) -> TrickOut:
         self._body_z = 0.0
