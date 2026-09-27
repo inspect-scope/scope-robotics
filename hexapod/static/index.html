@@ -50,11 +50,19 @@ button {
 button:active { background: var(--baseline); }
 button[disabled] { opacity: .4; cursor: default; }
 button.on { background: var(--accent); border-color: var(--accent); }
+select {
+  font: inherit; color: var(--ink); background: var(--grid);
+  border: 1px solid var(--baseline); border-radius: var(--radius);
+  padding: 9px 12px; cursor: pointer;
+}
 #estop {
   background: var(--critical); border-color: var(--critical); color: #fff;
   font-weight: 700; letter-spacing: .6px; padding: 9px 18px;
 }
 #estop.latched { background: var(--surface); color: var(--critical); }
+#jump.armed { background: var(--warning); border-color: var(--warning); color: #111; }
+#bounce .loop { font-size: 12px; margin-left: 2px; opacity: .65; }
+#bounce.on .loop { opacity: 1; }
 
 /* --- stat tiles --- */
 .stats {
@@ -219,6 +227,10 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   <div class="row">
     <button id="stand">Stand</button>
     <button id="sit">Sit</button>
+    <button id="jump" title="click twice to jump">Jump</button>
+    <button id="bounce" title="loops until off">Bounce <span class="loop" aria-hidden="true">↻</span></button>
+    <select id="gait-pick" aria-label="Gait"></select>
+    <select id="mode-pick" aria-label="Mode"></select>
     <button id="torque">Torque</button>
     <button id="clear" style="margin-left:auto">Clear e-stop</button>
   </div>
@@ -338,7 +350,7 @@ const round2 = (v) => Math.round(v * 100) / 100;
 // Space and C stay global. WASD/QE only run while the pad block is focused.
 const DRIVE_KEYS = { w: "vy+", s: "vy-", d: "vx+", a: "vx-", q: "yaw+", e: "yaw-" };
 const HINT_IDLE = "click to capture keyboard";
-const HINT_LIVE = "WASD move · QE turn · Esc to release";
+const HINT_LIVE = "WASD move · QE turn · J J jump · Esc to release";
 const held = new Set();
 let keysOwn = false;
 const driveEl = $("drive");
@@ -370,6 +382,7 @@ addEventListener("keydown", (ev) => {
   if (key === " ") { ev.preventDefault(); return estop(); }
   if (key === "escape" && keysOn()) { ev.preventDefault(); return driveEl.blur(); }
   if (key === "c" && !ev.repeat) { ev.preventDefault(); return capture(); }
+  if (key === "j" && keysOn() && !ev.repeat) { ev.preventDefault(); return armJump(); }
   if (!keysOn() || !DRIVE_KEYS[key]) return;
   held.add(key); ev.preventDefault(); applyKeys();
 });
@@ -398,6 +411,29 @@ $("estop").onclick = estop;
 $("clear").onclick = () => send({ type: "clear_estop" });
 $("stand").onclick = () => send({ type: "stand" });
 $("sit").onclick = () => send({ type: "sit" });
+const JUMP_ARM_MS = 1500;
+let jumpUntil = 0;
+function armJump() {
+  const btn = $("jump");
+  const now = performance.now();
+  if (now < jumpUntil) {
+    jumpUntil = 0;
+    btn.classList.remove("armed");
+    btn.textContent = "Jump";
+    return send({ type: "jump" });
+  }
+  jumpUntil = now + JUMP_ARM_MS;
+  btn.classList.add("armed");
+  btn.textContent = "Jump?";
+  setTimeout(() => {
+    if (performance.now() < jumpUntil) return;
+    jumpUntil = 0;
+    btn.classList.remove("armed");
+    btn.textContent = "Jump";
+  }, JUMP_ARM_MS);
+}
+$("jump").onclick = armJump;
+$("bounce").onclick = () => send({ type: "bounce", on: !$("bounce").classList.contains("on") });
 $("torque").onclick = () => send({ type: "torque", on: !$("torque").classList.contains("on") });
 
 /* ---------------- camera ---------------- */
@@ -430,25 +466,61 @@ async function capture() {
 $("capture").onclick = capture;
 
 /* ---------------- gait pattern ---------------- */
-function buildGaits(patterns, current) {
+function catalogRows(entries) {
+  return (entries || []).map((e) => typeof e === "string" ? { id: e, chica: e } : e);
+}
+
+function fillPick(el, rows, current) {
+  el.textContent = "";
+  for (const row of rows) {
+    const opt = document.createElement("option");
+    opt.value = row.id;
+    opt.textContent = row.id;
+    if (row.chica) opt.title = `Chica ${row.chica}`;
+    el.appendChild(opt);
+  }
+  el.value = current;
+}
+
+function markPick(el, name) {
+  if (el && [...el.options].some((opt) => opt.value === name)) el.value = name;
+}
+
+function buildGaits(entries, current) {
   const box = $("gaits");
   box.textContent = "";
-  for (const name of patterns) {
+  const rows = catalogRows(entries);
+  for (const row of rows) {
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.textContent = name;
-    btn.dataset.gait = name;
-    btn.classList.toggle("on", name === current);
-    btn.onclick = () => send({ type: "gait", pattern: name });
+    btn.textContent = row.id;
+    btn.title = row.chica ? `Chica ${row.chica}` : row.id;
+    btn.dataset.gait = row.id;
+    btn.classList.toggle("on", row.id === current);
+    btn.onclick = () => send({ type: "gait", pattern: row.id });
     box.appendChild(btn);
   }
+  fillPick($("gait-pick"), rows, current);
 }
 
 function markGait(name) {
   document.querySelectorAll("#gaits button").forEach((btn) => {
     btn.classList.toggle("on", btn.dataset.gait === name);
   });
+  markPick($("gait-pick"), name);
 }
+
+$("gait-pick").onchange = () => send({ type: "gait", pattern: $("gait-pick").value });
+
+function buildModes(entries, current) {
+  fillPick($("mode-pick"), catalogRows(entries), current);
+}
+
+function markMode(name) {
+  markPick($("mode-pick"), name);
+}
+
+$("mode-pick").onchange = () => send({ type: "mode", name: $("mode-pick").value });
 
 /* ---------------- sliders ---------------- */
 const SLIDERS = [
@@ -494,7 +566,8 @@ async function loadConfig() {
   setSlider("cycle_s", cfg.gait.cycle_s);
   setSlider("step_lift", cfg.gait.step_lift);
   setSlider("max_speed", cfg.gait.max_speed);
-  buildGaits(cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
+  buildGaits(cfg.gait.catalog || cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
+  buildModes((cfg.mode && cfg.mode.catalog) || ["normal"], (cfg.mode && cfg.mode.current) || "normal");
   ["pitch", "roll", "yaw", "x", "y"].forEach((k) => setSlider(k, 0));
   $("feet").innerHTML = cfg.legs.map((n) =>
     `<span class="foot" id="foot-${n}"><span class="dot"></span>${n}</span>`).join("");
@@ -521,14 +594,10 @@ function buildStance(names, coxae) {
   const field = node("g", { id: "stance-field" });
   const bot = node("g", { id: "stance-bot" });
   svg.append(field, bot);
-  stance.field = field;
-  stance.bot = bot;
 
   const ring = (r, dash) => node("circle", { cx: 0, cy: 0, r, fill: "none",
     stroke: "var(--grid)", "stroke-width": 1.5, "stroke-dasharray": dash });
   field.append(ring(220, "4 8"));
-  field.append(node("text", { x: 0, y: -232, "font-size": 22, fill: "var(--muted)", "text-anchor": "middle" }));
-  field.lastChild.textContent = "N";
 
   // Body outline through the coxa centres, drawn front-first so the shape reads.
   const ordered = [...names].sort((a, b) => Math.atan2(coxae[b][1], coxae[b][0]) - Math.atan2(coxae[a][1], coxae[a][0]));
@@ -596,17 +665,6 @@ function drawStance(s) {
   stance.heading.setAttribute("x2", s.velocity.vx * scale);
   stance.heading.setAttribute("y2", -s.velocity.vy * scale);
   stance.heading.setAttribute("opacity", Math.hypot(s.velocity.vx, s.velocity.vy) > 2 ? 1 : 0);
-
-  if (bot3d.mode === ViewMode.World) {
-    stance.bot.setAttribute("transform", `rotate(${-headingDeg})`);
-    stance.field.removeAttribute("transform");
-  } else if (bot3d.mode === ViewMode.Follow) {
-    stance.bot.removeAttribute("transform");
-    stance.field.setAttribute("transform", `rotate(${headingDeg})`);
-  } else {
-    stance.bot.removeAttribute("transform");
-    stance.field.removeAttribute("transform");
-  }
 }
 
 /* ---------------- servo actuation table ---------------- */
@@ -814,7 +872,6 @@ function init3d() {
     bot3d.mode = VIEW_CYCLE[(i + 1) % VIEW_CYCLE.length];
     syncCompass();
     draw3d(bot3d.state);
-    if (bot3d.state) drawStance(bot3d.state);
   };
   canvas.addEventListener("pointerdown", (ev) => {
     bot3d.drag = true;
@@ -941,7 +998,10 @@ function draw3d(s) {
 }
 
 /* ---------------- render ---------------- */
-const STATE_COLOR = { walking: "--accent", standing: "--good", sitting: "--ink-2", off: "--muted", estop: "--critical" };
+const STATE_COLOR = {
+  walking: "--accent", jumping: "--accent", bouncing: "--accent",
+  standing: "--good", sitting: "--ink-2", off: "--muted", estop: "--critical",
+};
 // Status thresholds mirror WARN_VOL / WARN_CUR in the Chica config.
 function volt_status(v) {
   if (v === null) return ["--muted", "no data"];
@@ -976,6 +1036,10 @@ function render(s) {
   $("state").textContent = s.state;
   $("state-icon").style.background = `var(${STATE_COLOR[s.state] || "--muted"})`;
   markGait(s.gait);
+  markMode(s.mode);
+  setSlider("cycle_s", s.cycle_s);
+  setSlider("step_lift", s.step_lift);
+  setSlider("max_speed", s.max_speed);
   const speed = Math.hypot(s.velocity.vx, s.velocity.vy);
   $("speed").textContent = `${speed.toFixed(0)} mm/s · ${s.velocity.yaw_rate.toFixed(0)} °/s`;
   $("tele-age").textContent = s.telemetry_age_s < 0 ? "telemetry --" : `telemetry ${s.telemetry_age_s.toFixed(1)} s ago`;
@@ -993,6 +1057,7 @@ function render(s) {
   if (s.camera && !s.camera.ok) $("nocam").textContent = s.camera.error ? `camera: ${s.camera.error}` : "no camera";
 
   $("torque").classList.toggle("on", s.torque);
+  $("bounce").classList.toggle("on", s.trick === "bounce");
   $("estop").classList.toggle("latched", s.estopped);
   $("clear").disabled = !s.estopped;
   setSlider("height", s.height);

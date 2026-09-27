@@ -26,7 +26,8 @@ from .board import BoardError
 from .camera import Camera, CameraError
 from .config import Config
 from .controller import COMMAND_TTL, POSE_LIMITS, Controller
-from .gait import GAIT_KINDS, Velocity
+from .gait import TrickKind, WALK_KINDS, walk_catalog, Velocity
+from .mode import MODE_KINDS, mode_catalog
 from .state import RobotState
 
 log = logging.getLogger(__name__)
@@ -117,7 +118,14 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                     "step_lift": s.step_lift,
                     "max_speed": s.max_speed,
                     "pattern": state.controller.gait.pattern,
-                    "patterns": list(GAIT_KINDS),
+                    "patterns": list(WALK_KINDS),
+                    "catalog": walk_catalog(config.tripod_groups),
+                    "tricks": [TrickKind.Bounce, TrickKind.Jump],
+                },
+                "mode": {
+                    "current": state.controller.mode,
+                    "kinds": list(MODE_KINDS),
+                    "catalog": mode_catalog(state.controller.modes),
                 },
                 "legs": list(config.leg_order),
                 "coxae": {name: list(leg.coxa_xy) for name, leg in config.legs.items()},
@@ -311,6 +319,16 @@ def _handle(controller: Controller, config: Config, message: Dict[str, Any]) -> 
             except ValueError:
                 log.warning("bad gait pattern %r", message["pattern"])
         _tune(config, message)
+    elif kind == "mode":
+        name = message.get("name", message.get("mode"))
+        try:
+            controller.set_mode(str(name))
+        except ValueError:
+            log.warning("bad stance mode %r", name)
+    elif kind == "jump":
+        controller.jump()
+    elif kind == "bounce":
+        controller.set_bounce(bool(message.get("on")))
     elif kind == "ping":
         pass
     else:

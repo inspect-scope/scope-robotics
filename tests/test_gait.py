@@ -3,13 +3,14 @@ import math
 import pytest
 
 from hexapod import config as config_mod
-from hexapod.gait import GaitKind, STANCE_FRACTION, TripodGait, Velocity
+from hexapod.gait import Gait, GaitKind, STANCE_FRACTION, TrickKind, Velocity, walk_catalog
+from hexapod.kinematics import BodyPose
 
 
 @pytest.fixture()
 def setup():
     config = config_mod.load()
-    return config, TripodGait(config)
+    return config, Gait(config)
 
 
 def _run(gait, config, command, seconds, height=None):
@@ -102,3 +103,64 @@ def test_unknown_pattern_is_rejected(setup):
     _, gait = setup
     with pytest.raises(ValueError):
         gait.set_pattern("gallop")
+
+
+def test_chica_name_selects_the_walk(setup):
+    _, gait = setup
+    gait.set_pattern("walk1")
+    assert gait.pattern == GaitKind.Ripple
+    gait.set_pattern("walk3")
+    assert gait.pattern == GaitKind.Tripod
+
+
+def test_triple_keeps_four_feet_down(setup):
+    config, gait = setup
+    gait.set_pattern(GaitKind.Triple)
+    ground = -config.stance.ride_height
+    for feet in _run(gait, config, Velocity(0, 1, 0).scaled(config), 4):
+        down = [name for name, p in feet.items() if p[2] <= ground + 1e-6]
+        assert len(down) >= 4, down
+
+
+def test_ripple15_keeps_four_feet_down(setup):
+    config, gait = setup
+    gait.set_pattern(GaitKind.Ripple15)
+    ground = -config.stance.ride_height
+    for feet in _run(gait, config, Velocity(0, 1, 0).scaled(config), 4):
+        down = [name for name, p in feet.items() if p[2] <= ground + 1e-6]
+        assert len(down) >= 4, down
+
+
+def test_catalog_lists_chica_walk_names(setup):
+    config, _ = setup
+    rows = walk_catalog(config.tripod_groups)
+    assert {row["chica"] for row in rows} == {"walk3", "walk2", "walk25", "walk1", "walk15", "walkwave"}
+
+
+def test_jump_lifts_the_body_then_lands(setup):
+    config, gait = setup
+    gait.start_jump()
+    pose = BodyPose()
+    zs = []
+    dt = 1.0 / config.rate_hz
+    for _ in range(int(0.8 * config.rate_hz)):
+        gait.step(dt, Velocity(), config.stance.ride_height)
+        zs.append(gait.pose_overlay(pose).z)
+    assert max(zs) >= 20.0
+    assert zs[-1] == pytest.approx(0.0, abs=0.05)
+    assert gait.trick is None
+
+
+def test_bounce_bobs_without_leaving_the_ground(setup):
+    config, gait = setup
+    gait.set_bounce(True)
+    ground = -config.stance.ride_height
+    zs = []
+    dt = 1.0 / config.rate_hz
+    for _ in range(int(0.6 * config.rate_hz)):
+        feet = gait.step(dt, Velocity(), config.stance.ride_height)
+        assert all(p[2] == pytest.approx(ground) for p in feet.values())
+        zs.append(gait.pose_overlay(BodyPose()).z)
+    assert max(zs) > 2.0
+    assert min(zs) < -2.0
+    assert gait.trick == TrickKind.Bounce

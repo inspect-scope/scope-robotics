@@ -394,10 +394,12 @@ the server still starts and the panel says so.
 ## Web interface
 
 - Live view top left, from the camera's low-resolution stream. **Capture** (or `C`) saves a full-resolution still and shows the file name.
+- A 3D commanded-pose view sits next to the top-down stance. orbit / world / follow. drag to look around. green pads are closed foot switches.
 - Left pad moves, right pad turns. Click the pad block to capture the keyboard:
-  `W A S D` moves, `Q E` turns, `Esc` releases. Those keys do nothing until then.
+  `W A S D` moves, `Q E` turns, `Esc` releases. Those keys do nothing until then. `J` twice jumps, same as the button.
 - Space is e-stop from anywhere. So is the red button, and `POST /stop` if the page is wedged.
-- Stand, Sit and Torque are separate. Sit before you cut torque.
+- Stand, Sit and Torque are separate. Sit before you cut torque. Jump is two clicks. Bounce loops until off.
+- Gait and stance-mode dropdowns sit on that row. walks are the Chica set (tripod / triple / ripple / wave). modes are normal / speed / offroad.
 - The top-down view shows live foot positions. Green is on the ground, hollow blue is mid swing, yellow means that leg hit a joint limit.
 - Posture and gait sliders tune ride height, body tilt, cycle time, step lift and top speed while it walks.
 - The attitude tile shows pitch and roll from the IMU and the turn rates.
@@ -546,7 +548,8 @@ The stance block is ours, not a copy of Chica's `MODE_STANDARD`. It puts every f
 | [hexapod/protocol.py](hexapod/protocol.py) | Chica wire format. Pure functions, no IO. |
 | [hexapod/board.py](hexapod/board.py) | Serial thread, telemetry, watchdog. `FakeBoard` for dry runs. |
 | [hexapod/kinematics.py](hexapod/kinematics.py) | Body pose and 3-DOF leg IK. |
-| [hexapod/gait.py](hexapod/gait.py) | Tripod gait. |
+| [hexapod/gait.py](hexapod/gait.py) | Walk catalog and bounce/jump overlays. |
+| [hexapod/mode.py](hexapod/mode.py) | Stance presets: normal, speed, offroad. |
 | [hexapod/controller.py](hexapod/controller.py) | 50 Hz control loop and gait state. |
 | [hexapod/imu.py](hexapod/imu.py) | MPU-6050 over i2c. Bias calibration, pitch and roll. `FakeImu` for dry runs. |
 | [hexapod/camera.py](hexapod/camera.py) | Owns `Picamera2`. Live stream and stills. `FakeCamera` for dry runs. |
