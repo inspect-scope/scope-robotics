@@ -377,19 +377,20 @@ class FakeBoard(Servo2040):
             for name, point in feet.items()
             if name in self.config.touch
         }
-        now = time.monotonic()
         with self._lock:
             self._sim_contacts = contacts
             prev = self._telemetry
+            # Contacts only. A new updated_at here would look like a current
+            # reading and dilute the safety trip windows.
             self._telemetry = Telemetry(
-                volts=self.fake_volts if prev.volts is None else prev.volts,
-                amps=prev.amps if prev.amps is not None else 0.05,
+                volts=prev.volts,
+                amps=prev.amps,
                 contacts=contacts,
                 touch_volts={
                     name: _TOUCH_DOWN_V if contacts.get(name) else _TOUCH_UP_V
                     for name in self.config.touch
                 },
-                updated_at=now,
+                updated_at=prev.updated_at,
             )
 
     def open(self) -> None:
