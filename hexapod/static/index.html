@@ -63,6 +63,21 @@ select {
 #jump.armed { background: var(--warning); border-color: var(--warning); color: #111; }
 #bounce .loop { font-size: 12px; margin-left: 2px; opacity: .65; }
 #bounce.on .loop { opacity: 1; }
+#hand.live { box-shadow: inset 0 0 0 1px var(--good); }
+#hand-box {
+  width: min(720px, 96vw); padding: 0; border: 1px solid var(--grid);
+  border-radius: var(--radius); background: var(--surface); color: var(--ink);
+}
+#hand-box::backdrop { background: rgba(0,0,0,.55); }
+.hand-hd { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--grid); }
+.hand-hd strong { font-weight: 600; }
+.hand-hd .src { font-size: 12px; color: var(--muted); margin-right: auto; }
+.hand-stage { position: relative; background: #111; aspect-ratio: 4 / 3; }
+.hand-stage video, .hand-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hand-stage video { opacity: 0; }
+.hand-stage canvas { pointer-events: none; }
+#hand-readout { margin: 0; padding: 8px 12px 4px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+#hand-legend { margin: 0; padding: 0 12px 12px; font-size: 11px; color: var(--muted); }
 
 /* --- stat tiles --- */
 .stats {
@@ -82,7 +97,10 @@ select {
 .icon { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 
 /* --- feet --- */
-.feet { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--grid); background: var(--surface); }
+.feet { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--grid); background: var(--surface); }
+.feet-dots { display: flex; gap: 8px; flex-wrap: wrap; }
+.feet-note { margin-left: auto; font-size: 12px; color: var(--warning); white-space: nowrap; min-height: 1.2em; }
+.feet-note:empty { visibility: hidden; }
 .foot { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .foot .dot { width: 8px; height: 8px; }
 .foot.down { color: var(--ink-2); } .foot.down .dot { background: var(--good); }
@@ -221,7 +239,10 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   </div>
 </section>
 
-<section class="feet" id="feet"></section>
+<section class="feet">
+  <div class="feet-dots" id="feet"></div>
+  <span class="feet-note" id="feet-note"></span>
+</section>
 
 <main>
   <div class="row">
@@ -229,6 +250,7 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     <button id="sit">Sit</button>
     <button id="jump" title="click twice to jump">Jump</button>
     <button id="bounce" title="loops until off">Bounce <span class="loop" aria-hidden="true">↻</span></button>
+    <button id="hand" title="open hand follow preview" hidden>Hand</button>
     <select id="gait-pick" aria-label="Gait"></select>
     <select id="mode-pick" aria-label="Mode"></select>
     <button id="torque">Torque</button>
@@ -286,6 +308,28 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   </details>
 </main>
 
+<dialog id="hand-box">
+  <div class="hand-hd">
+    <strong>hand follow</strong>
+    <span class="src" id="hand-src">MediaPipe Hands</span>
+    <button id="hand-lean">Lean</button>
+    <button id="hand-pincer">Pincer</button>
+    <button id="hand-go">Follow</button>
+    <button id="hand-x">close</button>
+  </div>
+  <div class="hand-stage">
+    <video id="hand-cam" playsinline muted></video>
+    <canvas id="hand-over"></canvas>
+  </div>
+  <p id="hand-readout">hold a hand in front of the laptop camera</p>
+  <p id="hand-legend">blue plane = palm · yellow = commanded shift · pincer = index/middle → L1/R1</p>
+</dialog>
+
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "/static/vendor/mediapipe/vision_bundle.mjs";
+window.mpHands = { FilesetResolver, HandLandmarker };
+window.dispatchEvent(new Event("mp-ready"));
+</script>
 <script>
 const $ = (id) => document.getElementById(id);
 const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
@@ -434,7 +478,218 @@ function armJump() {
 }
 $("jump").onclick = armJump;
 $("bounce").onclick = () => send({ type: "bounce", on: !$("bounce").classList.contains("on") });
+$("hand").onclick = openHand;
+$("hand-go").onclick = () => send({ type: "hand", on: !$("hand-go").classList.contains("on") });
+$("hand-lean").onclick = () => { lastHandMode = "lean"; send({ type: "hand", puppet: "lean" }); };
+$("hand-pincer").onclick = () => { lastHandMode = "pincer"; send({ type: "hand", puppet: "pincer" }); };
+$("hand-x").onclick = () => $("hand-box").close();
+$("hand-box").addEventListener("close", stopHand);
 $("torque").onclick = () => send({ type: "torque", on: !$("torque").classList.contains("on") });
+
+/* ---------------- hand modal ---------------- */
+let handStream = null;
+let handBusy = false;
+let handOpen = false;
+let handMp = null;
+let lastHandPose = {};
+let lastHandMode = "lean";
+let poseLim = { shift: 15, roll: 8, pitch: 8, yaw: 8 };
+const HAND_BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const HAND_PALM = [0, 5, 9, 13, 17];
+const PINCER_TIPS = [8, 12];
+const PINCER_BONES = new Set(["5,6","6,7","7,8","9,10","10,11","11,12"]);
+
+function whenMp() {
+  if (window.mpHands) return Promise.resolve(window.mpHands);
+  return new Promise((resolve) => window.addEventListener("mp-ready", () => resolve(window.mpHands), { once: true }));
+}
+
+async function openHand() {
+  $("hand-box").showModal();
+  if (handStream) return;
+  handOpen = true;
+  try {
+    handStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: 640, height: 480 }, audio: false,
+    });
+  } catch (err) {
+    $("hand-readout").textContent = "camera denied: " + err.message;
+    return;
+  }
+  const video = $("hand-cam");
+  video.srcObject = handStream;
+  await video.play();
+  try {
+    const mp = await whenMp();
+    const fileset = await mp.FilesetResolver.forVisionTasks("/static/vendor/mediapipe/wasm");
+    handMp = await mp.HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: "/static/vendor/mediapipe/hand_landmarker.task" },
+      runningMode: "VIDEO",
+      numHands: 1,
+    });
+    $("hand-src").textContent = "MediaPipe Hands 3d";
+  } catch (err) {
+    handMp = null;
+    $("hand-src").textContent = "skin blob fallback";
+    $("hand-readout").textContent = "mediapipe wasm failed: " + err.message;
+  }
+  pumpHand();
+}
+
+function stopHand() {
+  handOpen = false;
+  send({ type: "hand", on: false });
+  if (handStream) {
+    handStream.getTracks().forEach((t) => t.stop());
+    handStream = null;
+  }
+  $("hand-cam").srcObject = null;
+}
+
+function pumpHand() {
+  if (!handOpen || !handStream) return;
+  const video = $("hand-cam");
+  const canvas = $("hand-over");
+  if (video.readyState >= 2) {
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 480;
+    if (canvas.width !== w) { canvas.width = w; canvas.height = h; }
+    const ctx = canvas.getContext("2d");
+    ctx.save();
+    ctx.translate(w, 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(video, 0, 0, w, h);
+    ctx.restore();
+    if (handMp) {
+      const result = handMp.detectForVideo(canvas, performance.now());
+      const marks = result.landmarks && result.landmarks[0];
+      const points = marks ? marks.map((p) => [p.x, p.y, p.z]) : [];
+      const world = marks && result.worldLandmarks && result.worldLandmarks[0]
+        ? result.worldLandmarks[0].map((p) => [p.x, p.y, p.z]) : [];
+      paintHand(ctx, w, h, {
+        tracking: points.length >= 21,
+        source: "mediapipe",
+        points,
+        connections: points.length ? HAND_BONES : [],
+        pose: lastHandPose,
+        mode: lastHandMode,
+      });
+      if (!handBusy) {
+        handBusy = true;
+        fetch("/api/hand-landmarks", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ points, world: world.length ? world : null }),
+        }).then((res) => res.ok ? res.json() : null).then((view) => {
+          if (view && view.pose) lastHandPose = view.pose;
+          if (view && view.mode) lastHandMode = view.mode;
+        }).catch((err) => { $("hand-readout").textContent = "hand: " + err.message; })
+          .finally(() => { handBusy = false; });
+      }
+    } else if (!handBusy) {
+      handBusy = true;
+      canvas.toBlob(async (blob) => {
+        try {
+          const res = await fetch("/api/hand-frame", { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } });
+          if (res.ok) paintHand(canvas.getContext("2d"), w, h, await res.json());
+        } catch (err) {
+          $("hand-readout").textContent = "hand: " + err.message;
+        } finally {
+          handBusy = false;
+        }
+      }, "image/jpeg", 0.7);
+    }
+  }
+  requestAnimationFrame(pumpHand);
+}
+
+function paintHand(ctx, w, h, view) {
+  const raw = view.points || [];
+  const pose = view.pose || lastHandPose || {};
+  const src = view.source || "lost";
+  $("hand-src").textContent = src === "mediapipe" ? "MediaPipe Hands 3d" : src === "blob" ? "skin blob fallback" : "looking…";
+  if (!raw.length) {
+    $("hand-readout").textContent = "no hand in frame";
+    return;
+  }
+  const pts = raw.map((p) => ({ x: p[0] * w, y: p[1] * h, z: (p[2] || 0) * w }));
+  const zmin = Math.min(...pts.map((p) => p.z));
+  const zmax = Math.max(...pts.map((p) => p.z));
+  const near = (z) => (zmax - z) / (zmax - zmin + 1e-6);
+
+  paintPalmPlane(ctx, pts);
+
+  const bones = (view.connections || HAND_BONES)
+    .map(([a, b]) => ({ a: pts[a], b: pts[b], id: a + "," + b, d: ((pts[a] && pts[a].z) + (pts[b] && pts[b].z)) / 2 }))
+    .filter((b) => b.a && b.b)
+    .sort((u, v) => v.d - u.d);
+  const pincer = (view.mode || lastHandMode) === "pincer";
+  for (const bone of bones) {
+    const n = (near(bone.a.z) + near(bone.b.z)) / 2;
+    const grab = pincer && PINCER_BONES.has(bone.id);
+    ctx.strokeStyle = grab ? `rgba(57,135,229,${0.45 + n * 0.55})` : `rgba(12,163,12,${0.28 + n * 0.72})`;
+    ctx.lineWidth = 1.1 + n * 3.4;
+    ctx.beginPath();
+    ctx.moveTo(bone.a.x, bone.a.y);
+    ctx.lineTo(bone.b.x, bone.b.y);
+    ctx.stroke();
+  }
+  pts.forEach((p, i) => {
+    const n = near(p.z);
+    ctx.fillStyle = pincer && PINCER_TIPS.includes(i) ? "#3987e5" : `rgba(12,163,12,${0.35 + n * 0.65})`;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, (i === 0 ? 3.5 : 1.8) + n * 3.2, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  if (pincer && pts[8] && pts[12]) {
+    const leftFirst = pts[8].x <= pts[12].x;
+    ctx.fillStyle = "#3987e5";
+    ctx.font = "12px ui-sans-serif, sans-serif";
+    ctx.fillText(leftFirst ? "L1" : "R1", pts[8].x + 8, pts[8].y - 8);
+    ctx.fillText(leftFirst ? "R1" : "L1", pts[12].x + 8, pts[12].y - 8);
+  }
+  if (!pincer) paintShiftArrow(ctx, pts, pose);
+  $("hand-readout").textContent = !view.tracking ? "no hand in frame"
+    : pincer ? "pincer  index/middle → L1/R1"
+    : `chassis lean  x ${fmt(pose.x, 1)}  y ${fmt(pose.y, 1)}  roll ${fmt(pose.roll, 1)}  pitch ${fmt(pose.pitch, 1)}  yaw ${fmt(pose.yaw, 1)}`;
+}
+
+function paintPalmPlane(ctx, pts) {
+  const w = pts[0], i = pts[5], p = pts[17];
+  if (!w || !i || !p) return;
+  const q = { x: i.x + p.x - w.x, y: i.y + p.y - w.y };
+  ctx.beginPath();
+  ctx.moveTo(w.x, w.y);
+  ctx.lineTo(i.x, i.y);
+  ctx.lineTo(q.x, q.y);
+  ctx.lineTo(p.x, p.y);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(57,135,229,0.22)";
+  ctx.strokeStyle = "rgba(57,135,229,0.95)";
+  ctx.lineWidth = 2;
+  ctx.fill();
+  ctx.stroke();
+}
+
+function paintShiftArrow(ctx, pts, pose) {
+  const palm = HAND_PALM.map((i) => pts[i]).filter(Boolean);
+  if (palm.length < 3) return;
+  const c = {
+    x: palm.reduce((s, p) => s + p.x, 0) / palm.length,
+    y: palm.reduce((s, p) => s + p.y, 0) / palm.length,
+  };
+  const span = Math.hypot(pts[5].x - pts[17].x, pts[5].y - pts[17].y);
+  const scale = Math.max(28, span * 0.7);
+  const sx = ((pose.x || 0) / poseLim.shift) * scale * 0.9;
+  const sy = -((pose.y || 0) / poseLim.shift) * scale * 0.9;
+  if (Math.hypot(sx, sy) <= 4) return;
+  ctx.strokeStyle = "#fab219";
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.moveTo(c.x, c.y);
+  ctx.lineTo(c.x + sx, c.y + sy);
+  ctx.stroke();
+}
 
 /* ---------------- camera ---------------- */
 // The <img> holds one long-lived HTTP connection to /stream. Set src once when the
@@ -559,6 +814,7 @@ function setSlider(key, value) {
 async function loadConfig() {
   const cfg = await (await fetch("/api/config")).json();
   const lim = cfg.pose_limits;
+  if (lim) poseLim = { shift: lim.shift, roll: lim.roll, pitch: lim.pitch, yaw: lim.yaw };
   retune("height", cfg.height.min, cfg.height.max);
   ["roll", "pitch", "yaw"].forEach((k) => retune(k, -lim[k], lim[k]));
   ["x", "y"].forEach((k) => retune(k, -lim.shift, lim.shift));
@@ -568,6 +824,7 @@ async function loadConfig() {
   setSlider("max_speed", cfg.gait.max_speed);
   buildGaits(cfg.gait.catalog || cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
   buildModes((cfg.mode && cfg.mode.catalog) || ["normal"], (cfg.mode && cfg.mode.current) || "normal");
+  $("hand").hidden = !cfg.hand;
   ["pitch", "roll", "yaw", "x", "y"].forEach((k) => setSlider(k, 0));
   $("feet").innerHTML = cfg.legs.map((n) =>
     `<span class="foot" id="foot-${n}"><span class="dot"></span>${n}</span>`).join("");
@@ -1058,6 +1315,11 @@ function render(s) {
 
   $("torque").classList.toggle("on", s.torque);
   $("bounce").classList.toggle("on", s.trick === "bounce");
+  $("hand").classList.toggle("on", !!(s.hand && s.hand.follow === "on"));
+  $("hand").classList.toggle("live", !!(s.hand && s.hand.tracking));
+  $("hand-go").classList.toggle("on", !!(s.hand && s.hand.follow === "on"));
+  $("hand-lean").classList.toggle("on", !!(s.hand && s.hand.mode === "lean"));
+  $("hand-pincer").classList.toggle("on", !!(s.hand && s.hand.mode === "pincer"));
   $("estop").classList.toggle("latched", s.estopped);
   $("clear").disabled = !s.estopped;
   setSlider("height", s.height);
@@ -1068,12 +1330,14 @@ function render(s) {
   }
   document.querySelectorAll(".foot").forEach((el) => el.classList.remove("limited"));
   (s.limited_legs || []).forEach((n) => $("foot-" + n)?.classList.add("limited"));
+  $("feet-note").textContent = (s.limited_legs && s.limited_legs.length)
+    ? `limited ${s.limited_legs.join(", ")}` : "";
 
   const problems = [];
   if (!s.connected) problems.push(s.error ? `board offline: ${s.error}` : "board offline");
-  if (s.limited_legs?.length) problems.push(`pose limited on ${s.limited_legs.join(", ")}`);
   if (s.estopped) problems.push(s.safety_trip ? `safety trip: ${s.safety_trip}. Find the cause before clearing` : "e-stop latched, clear it before standing");
   if (imu.error && !imu.ok && !imu.calibrating) problems.push(`imu: ${imu.error}`);
+  if (s.hand && s.hand.error) problems.push(`hand: ${s.hand.error}`);
   drawStance(s);
   drawActuators(s);
   draw3d(s);
