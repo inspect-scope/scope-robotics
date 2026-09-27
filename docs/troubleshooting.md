@@ -213,7 +213,7 @@ in what order — use the by-id path in `config/hexapod.yaml`.
 Board serial numbers differ, so this path identifies *which* Servo2040 it is,
 which matters once there's a spare on the bench.
 
-### `FileNotFoundError: /dev/ttyACM0` kills `hexapod serve`
+### `FileNotFoundError` or `Could not exclusively lock port` kills `hexapod serve`
 
 The board was the one device whose absence was fatal at startup. IMU and
 camera already degrade to a line on the status page.
@@ -225,6 +225,15 @@ would thrash; and it's the field failure mode (a jolt inside a tank).
 Two requirements when doing this — reconnect periodically rather than just
 tolerating absence, and make `/move` fail **loudly** while the board is
 offline rather than silently accepting commands.
+
+**Written 26 Sep 2026, not yet deployed to the Pi.** The text above described
+the intent; `cmd_serve` still called `board.open()` bare, so the server exited
+and systemd restarted it every 2 s. Adding the exclusive port lock made this
+visible: the moment `poke.py --centre` held the port, the service crash-looped
+eleven times behind the operator. In the repo, `board.open_tolerant()` catches
+the `OSError` (missing port and locked port are both that), puts the message on
+the status line and retries every 5 s. A mid-session USB drop is still not
+reconnected; that is the remaining gap.
 
 ### Trace cut
 
@@ -366,33 +375,96 @@ camera:
 are a 180, the sensor does them during readout, and it costs nothing. Restart
 the service to pick it up, no reboot.
 
-**The device-tree route was tried first and did not work.** The plan was:
+**The device-tree route was tried first and appeared not to work.** The line
+was:
 
 ```
 dtoverlay=imx708,cam0,rotation=180
 ```
 
-which is a documented `imx708` overlay parameter, is read by libcamera as the
-sensor's mounting rotation, and would have fixed `rpicam-still` and every
-future tool at the same time. Better idea on paper. The image came back
-inverted anyway.
+It did apply (the property is on the node in `/proc/device-tree`), and it
+changed nothing, because **180 is the imx708 overlay's default**:
+`imx708.dtsi` has `rotation = <180>;`. Camera Module 3 is built with the
+sensor inverted relative to the board, so the default already corrects for
+that. To flip the image through the device tree you set `rotation=0`, not
+180. Found on 26 Sep 2026; for three days this section said "reason unknown".
 
-Not chased down, because the yaml fix works and the camera only has one
-consumer that matters. If you want to know which layer swallowed it:
+So the two settings do **not** cancel today: `rotation=180` in `config.txt`
+is the default restated, and `camera.rotation: 180` in the yaml is the one
+real flip. Take `,rotation=180` off the overlay line anyway, it is noise that
+reads like a setting. What would cancel is `rotation=0` in the device tree
+together with `180` in the yaml. Pick one:
+
+- yaml `camera.rotation: 180` (current). Fixes the server, not `rpicam-still`.
+- device tree `rotation=0` and yaml `rotation: 0`. Fixes every tool on the Pi.
+
+An image that inverts after an unrelated change is one of these two having
+moved, not the camera.
+
+### `No camera number 0 found` after it had been working
+
+Journal line from the server: `camera unavailable: No camera number 0 found`.
+`rpicam-hello --list-cameras` says `No cameras available!`. Hit 26 Sep 2026,
+after the body had been apart and back together; `config.txt` untouched for
+three days.
+
+First, is it the overlay or the module? `i2cdetect` and `xxd` are not on this
+image, so:
 
 ```sh
-grep -n "imx708\|camera_auto_detect" /boot/firmware/config.txt
-rpicam-still -n -t 1000 -o /tmp/orient.jpg
+for d in /sys/bus/i2c/devices/1[01]-00*; do echo "$d $(cat $d/name) $(readlink $d/driver)"; done
+sudo dmesg | grep -E "imx708|dw9807"
 ```
 
-`rpicam-still` upright and the stream inverted means libcamera honoured the
-overlay and picamera2 overrode it. Both inverted means the overlay line never
-took, and `camera_auto_detect=1` still being present is the first suspect,
-since the firmware then loads its own overlay without the parameter.
+`10-001a imx708` with no driver after it means the overlay applied and the
+probe failed. Then dmesg says why. This time:
 
-**Only flip in one place.** Two 180s is no rotation. If the overlay line is in
-`config.txt`, take it out, or set `camera.rotation: 0` and leave it. An image
-that inverts after an unrelated OS update is this, not the camera moving.
+```
+dw9807 10-000c: I2C write CTL fail ret = -121
+imx708 10-001a: failed to read chip id 708, with error -5
+imx708 10-001a: probe with driver imx708 failed with error -5
+```
+
+The driver powered the module and read the chip ID; nothing answered (-5),
+and the focus motor did not ACK either (-121). That is electrical, not config.
+`rotation=180` on the overlay line was applied and is irrelevant here.
+
+**A raw i2c scan proves nothing on its own.** After a failed probe the kernel
+leaves `cam0_reg` disabled (`/sys/class/regulator/*/state`), so 0x1a and 0x50
+are silent whether or not the ribbon is good. Re-run the probe, which powers
+the rail, and read dmesg again:
+
+```sh
+echo 10-001a | sudo tee /sys/bus/i2c/drivers/imx708/bind
+sudo dmesg | tail -8
+```
+
+**Rule out the other connector without touching the ribbon.** The overlay says
+`cam0`. Load the CAM1 variant at runtime; it creates bus 11 and probes there:
+
+```sh
+sudo dtoverlay imx708        # no cam0 = CAM1 on a Pi 5
+sudo dmesg | tail -8
+```
+
+Same `failed to read chip id` on `11-001a` means it is not the connector.
+The runtime overlay stays until reboot; `dtoverlay -r` did not see it.
+
+Both connectors silent leaves the ribbon, its two connectors, or the module.
+Reseat both ends, power off, per the Cable section below, and check the small
+FPC latch on the module itself, not only the Pi end. `camera_auto_detect=1`
+is still in `config.txt` next to the manual overlay; it never found this
+module even when the module worked, so it is no help as a test.
+
+**Outcome, 26 Sep 2026.** Reseated in CAM/DISP 0: same. Ribbon moved to
+CAM/DISP 1 with the overlay line changed to plain `dtoverlay=imx708` (CAM1 is
+the Pi 5 default; backup at `config.txt.bak-2026-09-26`): same errors on
+`11-001a`. So the Pi's connectors are cleared. Three chips on the module are
+silent at once, sensor 0x1a, focus motor 0x0c and EEPROM 0x50, and the EEPROM
+does not depend on the sensor, so it is the shared path: ribbon, its two
+connectors, or the module's regulator, not one dead chip. Next is a known-good
+22-to-15 pin ribbon, then the module. The ribbon is still in CAM/DISP 1; going
+back to CAM/DISP 0 needs `,cam0` on the overlay line again.
 
 ### Cable
 
@@ -514,6 +586,220 @@ attached; use the official 27 W supply or the UBEC for anything real.
 
 ## Servos
 
+### One joint never moves, everything else does
+
+Reported as "only the tibia is moving" on Stand, on the leg wired to
+headers 1 to 3. `tools/servolog.py` showed the femur channel (SERVO 2) being
+commanded 1024 -> 1376 us like all the others, so the software was fine and the
+question was what sat on that header.
+
+Found without eyes, 26 Sep 2026, service stopped, robot on the stand:
+`tools/poke.py --probe` wiggles each header +-250 us from where it is and
+watches the board's current sensor.
+
+```
+header   peak A  delta
+SERVO 1   +3.42  +3.17  servo moved
+SERVO 2   +0.24  +0.00  NOTHING drew current
+SERVO 3   +3.09  +2.85  servo moved
+... 15 more, all +1.3 to +5.0 A
+```
+
+Seventeen headers pull one to five amps when driven. SERVO 2 pulls exactly
+nothing, so there is no working servo on it: unplugged, lead in the wrong way
+round, broken lead, dead servo, or a dead output on the board. Swapping the
+SERVO 2 and SERVO 3 plugs tells the first four from the last.
+
+**Swapped, re-probed:** SERVO 2 now +3.26 A with the servo that came from
+header 3, SERVO 3 +0.33 A idle, nothing, with the servo that came from
+header 2. The fault moved with the plug, so the board is fine and it is that
+servo or its lead. Check the plug orientation against its neighbours first
+(Feetech leads: brown −, red +, orange S; a reversed plug gives exactly this),
+then the crimps, then the servo itself on the bench tester. Put the plugs back
+on their original headers afterwards, or the census will record the swap.
+
+This is also the explanation for the Stand/Sit observation. Coxa sits still
+on Stand by design, the femur was dead, so the tibia was the only thing left
+to move on that leg. The other five legs were never in question; the channel
+map still needs the census, but no other header is dead.
+
+Note for the probe numbers: an unloaded FT5330M pulls far more than expected
+when it starts, 3 A peaks are normal, so the threshold for "moved" is set low
+(0.15 A) and anything under it is a real absence, not a quiet servo.
+
+### Left and right legs do opposite things on Sit and Stand
+
+Symptom: press Torque or Stand and one side tucks up while the other stretches
+out flat. After the refit the legs looked alike at 1500 us, but the horns were
+part of the problem too: see the next section.
+
+`tools/servolog.py` shows why: every leg is sent the **same** pulse. Sit is
+1022 us on all six femurs, 789 us on all six tibias. Left and right legs are
+mirror images, so the same shaft rotation moves them opposite ways in the body
+frame. From a correctly centred leg, sit asks the shaft for +43 deg:
+
+| joint | pulse | leg that is right | leg that is mirrored |
+|---|---|---|---|
+| coxa | 1411 | 0 deg | -16 deg |
+| femur | 1022 | +78 deg, thigh up | -8 deg, thigh down |
+| tibia | 789 | +132 deg, knee folded | +4 deg, knee straight |
+
+`direction` in [config/hexapod.yaml](../config/hexapod.yaml) exists for exactly
+this and every servo shipped as `1`. One side needs `-1` on all three joints,
+nine servos. On this build it is probably the **right** legs: inferred from
+photos, not yet confirmed by watching a joint move.
+
+**First put on the left, then moved.** Asked which side sat correctly, the
+operator said "left seems more like standing up, while right seems more like
+sitting". `-1` went on the left. Torque still looked wrong, now symmetrically:
+photos of the sit pose showed level thighs and knees bent about 90 to 110 deg
+on all six legs. With the horn angles estimated at 1500 us (femur ~33, tibia
+~134), that pose comes out only if both sides were mirrored, so the `-1`
+belongs on the right. Whether the operator meant their own right or the
+robot's was not recorded. Nobody has yet watched a joint move with the right
+side at `-1`. Left and right are the robot's own: stand behind it, look where
+the camera looks. The confirming test is `hexapod jog` from centre:
+jog opens at the sit pose, not at centre, so centre the leg first: `R2 -8 35
+134` (1500 us on channels 6, 7 and 8), then `R2 -8 60 134` (femur +25, 1778 us
+on channel 7). With the right side at `-1` the thigh must lift. If it drops,
+the right side is `1` and the `-1` goes back on the left.
+
+**Why the port missed it.** Chica's `chica-config-2040.txt` has no direction
+field: all 18 servos read `2000 1000`, identical. Chica's app applied the
+mirror itself from the `L`/`R` in the servo name (`L11`, `R31`). We copied the
+pin numbers and the calibration pair and not that behaviour, and nothing in
+`kinematics.py` mirrors anything.
+
+**Flipping direction does not move the centre.** `servo_angle = direction *
+(joint_angle - attach_angle)`, so at the attach angle the servo reads 1500 us
+whichever sign it has. Horn calibration survives a direction flip; only the
+travel either side of centre mirrors. Do the horns first, then the directions.
+
+After the flip, left and right are symmetric about 1500 us:
+
+```
+L2 femur ch10   centre 1500   sit 1022   stand 1375   (+353)
+R2 femur ch 7   centre 1500   sit 1978   stand 1625   (-353)
+```
+
+Which side gets `-1` is a property of the build, not a rule. Read it off Sit:
+the side whose thighs rise and knees fold is correct, the side that stretches
+out flat gets the flip. Test it on a stand, and only once the horns match their
+attach angles: with a horn far off its attach angle, the wrong choice drives a
+joint into a stop even in the air.
+
+### Torque looks nothing like sit, on both sides equally
+
+With left `-1`, right `+1` (later judged the wrong way round) and centring
+"done", Torque gave level thighs and knees at about 110 deg interior on all six
+legs. The level thighs are the direction; the knees are the horns. Photos of
+two legs at 1500 us, +-5 deg: femur horns at about 33 deg (config 35, fine),
+tibia horns folded to about 134 deg where the config's `tibia_attach_angle`
+said 68. The knees look to have been fitted near the *sit* angle. "Knee bent 68 deg from straight" is easy to read as a 68 deg interior
+angle, which is a 112 deg fold, and a few teeth past that is 134.
+
+Two ways out. Refit the six tibia horns with the knee at 68 deg fold (112 deg
+interior) and set `tibia_attach_angle` back to 68 in the same change. Or set the config to the hardware, which is what
+was done: `tibia_attach_angle: 134`. The cost is range. The pulse clamp gives
++-81 deg about centre, so with centre at 134 the knee cannot open past 53 deg.
+The gait uses 118 to 132, so walking is unaffected; a straight leg is not
+reachable until the horns are refitted. `hexapod check` reports it as
+`tibia at +30 deg wants 344us, outside pulse_us`; the `shift` clamps in the
+same output are older and unrelated (identical with 68).
+
+Measure, do not eyeball: a protractor on the knee at 1500 us, interior angle,
+then attach = 180 minus that. The photo estimate here was +-5 deg.
+
+### Three femurs died on 26 Sep 2026: what is known and what is not
+
+SERVO 2 (R3 femur), SERVO 17 (L1 femur), SERVO 8 (R2 femur). The robot sat on
+blocks with its legs free all day; no foot touched anything. **Why they died is
+not established**, and there is no evidence of one shared cause. The accounts
+first written here on the day claimed more than the evidence held; they are
+listed at the end of this section so nobody revives them.
+
+**What the board can measure.** One current sensor for the whole servo rail,
+the total of all 18, and the pack voltage. No per-servo current. A reading can
+be pinned to one servo only while that servo is the only thing moving, which is
+what `poke.py --probe` arranges. A hold or a gait cannot.
+
+| servo | what was seen | what is established |
+|---|---|---|
+| SERVO 2, R3 femur | Silent on the first probe of the day, +0.00 A over idle. The silence followed the servo through a plug swap | The fault is the servo, its lead or its plug orientation, not the header. Not bench-tested. When and why: unknown. It was already dead when first probed, in the afternoon |
+| SERVO 17, L1 femur | Probe peaks of 5.2, 4.4, 5.4, 4.4 and 5.0 A over five runs one afternoon, while the others read 1.3 to 3.7 A. Unchanged by re-centring every horn. Then 0.33 A: dead | Consistently the hungriest servo, 13 to 38% above the FT5330M's 3.9 A stall spec on brief peaks. Cause unknown. The refit not changing it counts against an off-centre arm |
+| SERVO 8, R2 femur | Normal in the 18-channel sweep (2.52 A peak, settled to 0.17 A). About 40 minutes later, during `poke.py --centre`, the operator reported the total over 10 A, and about a minute after that reported SERVO 8 dead | One stalled FT5330M draws about 4 A, so over 10 A total means three joints near stall, or a failed unit. Which ones was not measured. Three minutes after the death report a newly fitted femur servo was reported very hot; which one (L1, R2, or the DS3235 on R3) was not recorded |
+
+**What holds for all three.** Nothing in the stack acted on current or voltage.
+The server and `poke.py` displayed the total and nothing cut torque, including
+when the operator saw it pass 10 A shortly before SERVO 8 died. Chica's config has `WARN_CUR 2 8 10` and `WARN_VOL 2 6.4 6`,
+but those are enforced by Chica's Android host app. The Servo2040 firmware
+(`chica-servo2040.cpp` in EddieCarrera/chica-servo2040-simpleDriver) only
+reports current and voltage when asked, and switches the relay when told.
+Replacing the app with the Pi stack dropped the cuts.
+
+**Hypotheses, and where they stand:**
+
+| hypothesis | status |
+|---|---|
+| Arms fitted off-centre, so 1500 us drives a thigh into the frame | Possible for SERVO 8, not observed. Does not fit SERVO 17. Unknown for SERVO 2. The two femurs photographed at 1500 us after the refit sat at about 33 deg against config 35 |
+| Tibia overdrive: horns at ~134 with the old config asked the left knees for 198 deg | Would stall the knee servos, not the femurs. Shin into thigh is internal to the femur subassembly, so no static load reaches the femur servo. Every knee servo survived. Possible only between the refit and the 16:48 config change |
+| Direction bug driving right feet into the floor | The robot was never on the floor that day. Unknown for earlier days |
+| Overvoltage | Not supported. The pack read 6.95 to 7.78 V all afternoon (uncalibrated), inside the 4 to 8.4 V rating. The voltage at each death was not recorded |
+| Relay | Songle's datasheet rates the SRD-05VDC-SL-C changeover contacts at 7 A 28 VDC resistive and 3 A inductive, below the 10 A on the case. Over 10 A through them is out of rating. No arcing was observed |
+
+**What the probe can and cannot tell you.** It showed SERVO 17 as the hungriest
+servo on all five runs before it died, so a high reading is worth acting on. It read SERVO 8 normal an
+hour before it died, so **a clean probe does not clear a servo**. It exercises
+one header at a time with the legs free; standing and walking loads never
+happen during it.
+
+**What the trips catch, and what they miss.** In the repo, not yet on the Pi:
+
+- The board's IO thread estops, torque on, on a total over 10 A (mean over 1 s),
+  under 6.0 V (mean over 2 s), or no telemetry for 2 s. It runs under
+  `hexapod serve`, `jog` and `neutral` alike. **10 A needs three simultaneous
+  stalls on the stand**: one adds about 4 A, two read about 8 A. A single stall
+  holds indefinitely under this cut. The board also refuses torque while it is
+  offline, and does not replay an earlier request when the port comes back.
+  Both web pages show the trip reason.
+- `poke.py --centre` cuts at 10 A, and also at 1.5 A mean over 1.5 s once the
+  pose has settled. Legs free at a static pose read about 0.2 A, so one stalled
+  servo trips it. This is the situation SERVO 8 died in.
+- `poke.py --probe` cuts at 10 A over the whole run, stops the run when a
+  header is still pulling 0.8 A over idle a second after it returns (the
+  single-stall case), and stops before wiggling any header if the robot
+  already pulls more than 0.5 A at rest.
+- `poke.py --census` drops torque while you type each answer.
+- Every `poke.py` mode drops the relay after 2 s without a current reading, and
+  a second Ctrl-C cannot interrupt the relay-off.
+
+Catching a single stall under `hexapod serve` needs a mode-aware check: once a
+pose has held for a second, the total must fall back under a ceiling for that
+mode (legs free, standing on the floor, walking). Standing on the floor is
+estimated at 2.8 to 3.9 A from the femurs alone, for an unweighed robot of 2.5
+to 3.5 kg, with the knees adding an unknown amount. That overlaps one stall on
+the stand, so one fixed number cannot do both. The ceilings need measurements nobody has made yet:
+calibrate the current sensor against a clamp meter, weigh the robot, log settled
+current per pose on the floor and while walking, and stall one servo on purpose
+for two seconds to confirm the sensor reads about +4 A.
+
+**Fitting horns.** With the servo powered and holding 1500 us: on the bench
+tester in neutral, or under `poke.py --centre` with only that leg plugged in.
+Never with torque off. Then with torque off, swing the joint by hand. A
+well-fitted arm reaches the servo's end stops about equally either side of its
+working range, and nothing touches the frame.
+
+**Retracted.** Written here on 26 Sep and not supported by the evidence:
+"held at 10 A+" for all three (only SERVO 8's death came with a 10 A reading);
+R3 femur "already dead at 06:00" (no such observation); the relay "was
+arcing"; "femurs go first because they have the most leverage into a stop";
+the tibia overdrive as the cause of the femur deaths; "the shafts moved while
+the legs were handled" (unpowered Feetech legs hold position); "the only way
+that pulls 10 A is arms fitted off-centre"; "this alone would have saved both
+servos"; "will a third go? Not from these causes" (a third died that evening);
+"both right after the probe flagged them high" (only SERVO 17 was flagged);
+"20 to 30 s" stall holds while photographing (never timed).
+
 ### Centre before fitting the horn
 
 The servo's travel is fixed inside the servo. The horn only decides where that
@@ -521,7 +807,12 @@ arc sits relative to the printed arm.
 
 1. Command centre (`poke.py --centre`)
 2. **Don't touch the servo**
-3. Fit the arm at the angle the joint needs at rest
+3. Fit the arm at that joint's `geometry.*_attach_angle` in
+   `config/hexapod.yaml`, not at a sit or stand pose. On this build: coxa -8
+   (leg 8 deg back from its mount line), femur 35 (thigh 35 deg above
+   horizontal), tibia 134 (knee folded 134 deg, a 46 deg interior angle). One
+   value covers all six legs, so a single replacement must match it. To fit at
+   a different angle, refit every leg and change the config to match.
 4. Screw it down
 
 Fit the horn while the servo is anywhere but centre and the arm runs out of
@@ -529,7 +820,9 @@ travel one way and hits the end stop early. Nothing in software recovers those
 degrees — only unscrewing and starting again.
 
 The spline has discrete teeth, so landing a few degrees off is normal and
-expected. That residual is what the per-servo offsets in `hexapod.yaml` trim.
+expected. Trim the residual per servo by shifting its `us_neg45`/`us_pos45`
+pair together in `hexapod.yaml`: `2050/1050` moves centre +50 us, about 4.5 deg.
+There is no separate offset field.
 
 ### Horn screws
 

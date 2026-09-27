@@ -9,10 +9,10 @@ Stills land in `survey_dir/<session timestamp>/<capture timestamp>.jpg`, with a
 `.json` beside each holding the robot state at the moment of capture.
 
 The camera is mounted upside down, so `camera.rotation: 180` flips both streams
-with a libcamera `Transform`. The device tree can do the same job with
-`rotation=180` on the `imx708` overlay, which would also fix `rpicam-still`, but
-the two compose: if you ever get the overlay working, set `camera.rotation: 0`
-here or you are back to an inverted image.
+with a libcamera `Transform`. The device tree can do the same job for every tool
+on the Pi, but the imx708 overlay's default is already rotation=180, so the flip
+there is `rotation=0`. The two compose: if you flip in the overlay, set
+`camera.rotation: 0` here or you are back to an inverted image.
 """
 
 from __future__ import annotations

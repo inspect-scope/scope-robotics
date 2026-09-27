@@ -141,3 +141,25 @@ def test_a_run_of_failed_reads_reopens_the_chip(stack):
         assert not state.imu.is_open
     finally:
         state.stop()
+
+
+def test_last_error_leads_with_the_safety_trip():
+    config = config_mod.load()
+    board = FakeBoard(config)
+    board.fake_amps_on = 14.0
+    board.open()
+    controller = Controller(config, board)
+    controller.start()
+    state = RobotState(config, controller)
+    state.start()
+    try:
+        controller.stand()
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not board.safety_trip:
+            time.sleep(0.02)
+        assert board.safety_trip
+        assert state.snapshot()["last_error"] == board.safety_trip
+    finally:
+        state.stop()
+        controller.stop()
+        board.close()

@@ -195,3 +195,32 @@ def test_dropping_the_socket_stops_the_robot(client):
             time.sleep(0.03)
     time.sleep(0.8)
     assert client.controller.snapshot().active_source is None
+
+
+def test_state_reports_joint_angles_and_the_pulse_frame(client):
+    body = client.get("/api/state").json()
+    assert len(body["pulses"]) == 18 and all(isinstance(p, int) for p in body["pulses"])
+    assert set(body["angles"]) == set(body["feet"])
+    sitting = {leg: a["femur"] for leg, a in body["angles"].items()}
+    before = list(body["pulses"])
+
+    client.controller.board.set_torque(True)
+    client.controller.stand()
+    assert _wait_for(lambda: client.controller.snapshot().state == "standing")
+    assert _wait_for(lambda: abs(client.controller.snapshot().height - 80) < 0.5, seconds=3.0)
+
+    body = client.get("/api/state").json()
+    cfg = client.get("/api/config").json()
+    for leg, angles in body["angles"].items():
+        # sit 40 -> stand 80 drops every femur by ~31.6 deg; the pulse must follow
+        assert sitting[leg] - angles["femur"] == pytest.approx(31.6, abs=0.5)
+        femur_channel = cfg["servos"][leg]["femur"]["channel"]
+        assert body["pulses"][femur_channel] != before[femur_channel]
+
+
+def test_config_names_every_channel_once(client):
+    cfg = client.get("/api/config").json()
+    channels = [s["channel"] for joints in cfg["servos"].values() for s in joints.values()]
+    assert sorted(channels) == list(range(18))
+    assert all(s["direction"] in (1, -1) for joints in cfg["servos"].values() for s in joints.values())
+    assert cfg["pulse_us"] == [600, 2400]

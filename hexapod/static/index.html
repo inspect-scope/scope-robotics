@@ -523,7 +523,7 @@ function render(s) {
   const problems = [];
   if (!s.connected) problems.push(s.error ? `board offline: ${s.error}` : "board offline");
   if (s.limited_legs?.length) problems.push(`pose limited on ${s.limited_legs.join(", ")}`);
-  if (s.estopped) problems.push("e-stop latched, clear it before standing");
+  if (s.estopped) problems.push(s.safety_trip ? `safety trip: ${s.safety_trip}. Find the cause before clearing` : "e-stop latched, clear it before standing");
   if (imu.error && !imu.ok && !imu.calibrating) problems.push(`imu: ${imu.error}`);
   drawStance(s);
   $("banner").classList.toggle("show", problems.length > 0);

@@ -15,8 +15,11 @@ One process owns the hardware. The serial port, the i2c bus and the camera
 can each be opened by a single process, so `hexapod serve` holds all three and
 both pages (`/` for the operator, `/status` for the panel) are plain HTTP
 clients of it. Do not run `poke.py`, `preflight.py` or anything else that
-touches a device while the server is up; the "device busy" errors look
-intermittent and are not.
+touches a device while the server is up. The serial port is opened exclusively,
+so a second opener fails at once with "Could not exclusively lock port"; stop
+`hexapod.service` first. Before that lock existed, two processes could share
+the port and both drive the servos, which looks like random twitching and is
+not a hardware fault.
 
 Hardware problems hit during bring-up, and what fixed them, are in
 [docs/troubleshooting.md](docs/troubleshooting.md). Check there first when a
@@ -119,7 +122,17 @@ It prints joint travel over the full command envelope and flags any limit the ga
 python3 tools/poke.py /dev/ttyACM0 --centre
 ```
 
-Every servo goes to 1500 us. This is your mechanical zero.
+Every servo goes to 1500 us. This is your mechanical zero, and it is the pose
+the horns must be fitted in, each joint at its `geometry.*_attach_angle`.
+Chica's fit is thigh **35° above horizontal**, knee **folded 68° from
+straight** (112° interior, a fairly open knee), leg 8° back from its mount
+line, and it keeps the full knee range. This build's tibia horns sit at about
+134° fold (46° interior), so `tibia_attach_angle` is 134 to match; if you
+refit them at 68, set it back to 68 in the same change. All six identical, and
+one value covers all six legs, so a replacement servo must match it. Do not fit
+the arms in a pose that "looks like standing" or "looks like sitting". The
+attach angles must describe the pose you actually fitted; check `hexapod check`
+for lost range.
 
 **5. Fix the joint directions.** One leg at a time, still elevated.
 
@@ -129,10 +142,128 @@ hexapod jog
 
 Two checks per leg:
 
-- `L1 -8 35 68` (the three attach angles from the config) must put all three servos back at 1500 us.
-- `L1 0 0 0` must point the leg straight out sideways, horizontal, knee straight.
+- `L1 -8 35 134` (the three `geometry.*_attach_angle` values; use whatever the config says) must put all three servos back at 1500 us. Jog opens at the sit pose, so this is also how you centre a leg.
+- `L1 0 0 0` must point the leg straight out sideways, horizontal, with the knee as open as the pulse clamp allows: straight with a tibia attach angle of 68, about 53° fold at 134.
 
 If a joint moves the wrong way, flip `direction` from `1` to `-1` for that servo in the config. If a joint is centred but at the wrong angle, correct its attach angle.
+
+Femur and tibia are easier to read as a sit-to-stand move than as a single
+angle. These are the neutral poses the solver produces at `sit_height` 40 and
+`ride_height` 80, the same for all six legs to within 0.3°:
+
+| joint | sit | stand | sit → stand |
+|---|---|---|---|
+| coxa | 0.1° | 0.1° | nothing |
+| femur | 77.8° | 46.2° | drops 31.6° |
+| tibia | 131.7° | 118.6° | knee opens 13.1° |
+
+In jog, `R3 0 77.8 131.7` then `R3 0 46.2 118.6`. The femur must rotate **down**
+and the knee must **open**, pushing the foot further below the body. A femur
+that rises is an inverted femur, a knee that closes is an inverted tibia, and
+both can be wrong at once. Coxa barely moves between the two poses, so check it
+on its own: `R3 coxa 20` swings the leg counter-clockwise seen from above.
+
+`tibia` is the fold at the knee, 0 = tibia in line with the femur. The interior
+femur-to-tibia angle you would put a protractor on is 180 minus that, so 48°
+sitting and 61° standing. Same movement, and the two conventions run opposite
+ways, so be clear which one a number is in before acting on it.
+
+Flipping `direction` does not move the servo's centre. `servo_angle =
+direction * (joint_angle - attach_angle)`, so the servo still sits at 1500 us
+when the joint is at its attach angle whichever sign `direction` has; only the
+travel either side of it mirrors. Nothing needs remounting after a flip. A horn
+that is a spline tooth out shows up as the wrong *angle* in the attach-angle
+check above, not as the wrong direction.
+
+Do all six legs. Left and right are mirror images, so the signs are not
+guaranteed to match across a pair, and copying R3's answer to the other five is
+how you get one leg walking backwards.
+
+**Watch what actually went to the servos.** With `hexapod serve` running, on
+the Pi or a laptop:
+
+```sh
+python3 tools/servolog.py                    # localhost
+python3 tools/servolog.py --host hexapod.local --csv stand.csv
+```
+
+Then press Stand, Sit or Torque on `/`. It prints one line per channel that
+changed, with the leg and joint, the SERVO header number, the joint angle the
+solver asked for and the pulse that went out:
+
+```
+14:02:11.318  R3 femur   SERVO  2 (ch  1)    77.8 ->   46.2 deg   1500 -> 1622 us (+122)
+```
+
+Ctrl-C prints a summary: start, end, net travel and range for every channel,
+which ones never moved, which hit the pulse clamp, and whether every leg was
+asked for the same joint change (for Stand and Sit they should be). It cannot
+see which way the leg physically turned, so read it next to the robot: if
+SERVO 2 went +122 us and the knee went up when the table says the femur should
+drop, that is the servo whose `direction` flips.
+
+**If a commanded joint does not move at all, take a census.** The log says
+which header was driven; the census says what is on it, with the config out of
+the loop. Stop the service first, legs off the ground:
+
+```sh
+sudo systemctl stop hexapod
+python3 tools/poke.py /dev/ttyACM0 --census
+```
+
+**Is a servo dead, suspect, or fine?** Same tool, no eyes needed:
+
+```sh
+sudo systemctl stop hexapod
+python3 tools/poke.py /dev/ttyACM0 --probe
+```
+
+Each header is wiggled from where it is and the board's current sensor is read
+the whole time. One line per servo with the peak while moving and what it
+settled to a second later, then a summary. Read it like this:
+
+| reading | means | do |
+|---|---|---|
+| peak 0.15 A or more over idle, settles to idle | moved; healthy FT5330Ms have read 1.3 to 3.7 A | nothing |
+| peak under 0.15 A over idle | **dead**, or unplugged, or lead broken | swap its plug with a neighbour: fault follows the plug = servo or lead |
+| peak over 4.5 A (above the FT5330M's 3.9 A stall spec) | **suspect**: an external bind, or internal damage | torque off, turn the joint by hand: a catch is a bind to fix first; free, suspect the servo |
+| still pulling 0.8 A+ a second after the move | **stalled or bound** | something is in the way, find it before it cooks |
+| "well above the pack" | 40%+ hungrier than its siblings | watch it; re-run after a session and compare |
+
+The HIGH line is set for the FT5330M. A healthy DS3235 PRO peaks up to 4.4 A,
+close to it.
+
+In five probe runs one afternoon, SERVO 17 (L1 femur) peaked at 4.4 to 5.4 A
+while the others read 1.3 to 3.7 A, and it was dead by evening. SERVO 8 read
+normal about 40 minutes before it died, so a clean probe does not clear a
+servo. Torque comes on at the `--base` pose (1500 us without it); the probe
+then stops before wiggling any header if the robot already pulls more than
+0.5 A at rest, because a servo stalled at rest hides inside every per-header
+reading. It also stops the run, relay off, when a header is still pulling a
+second after it returns, and when the board stops answering for 2 s. Run it
+legs free, at the start of a session and after any mechanical change.
+
+**Mapping headers to joints** is `--census` instead of `--probe`, and does
+need eyes. Each of the 18 headers wiggles ±200 us in turn and you type what moved as
+position and joint, `RR femur`, `FL coxa`. Positions are FL FR ML MR RL RR;
+front is the camera end, left and right are the robot's own. At the end it
+prints the header-to-joint table and a `servos:` block to paste into
+[config/hexapod.yaml](config/hexapod.yaml). Because you name legs by where
+they are, not by what the config calls them, this also settles whether R1 is
+really at the front.
+
+**Or let the board tell you which headers have a live servo.** No eyes needed:
+
+```sh
+P=$(curl -s localhost:8000/api/state | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["pulses"]))')
+sudo systemctl stop hexapod
+python3 tools/poke.py /dev/ttyACM0 --probe --base "$P"
+```
+
+It wiggles each header from where the servo already is and watches the current
+sensor. A servo that moves pulls 1 to 5 A; a header with nothing on it, or a
+dead servo, pulls nothing. On this robot that found SERVO 2 silent while the
+other 17 answered, which was the whole of "only the tibia moves".
 
 **6. Neutral stance.** Still elevated. Then lower it onto the ground.
 
@@ -311,10 +442,10 @@ a tether. Over a bad link WebRTC would do better; that is not built.
 
 The camera is mounted upside down, so `camera.rotation` is `180` and both
 streams get a libcamera `Transform(hflip=1, vflip=1)`. Only 0 and 180 are
-allowed; a sensor can flip but not transpose. `rotation=180` on the `imx708`
-overlay in `/boot/firmware/config.txt` would do the same job for every tool on
-the Pi, and was tried first, but the image stayed inverted. Don't set both:
-two 180s cancel out.
+allowed; a sensor can flip but not transpose. The device tree can do the same
+job for every tool on the Pi, but note the `imx708` overlay's default is
+already `rotation=180`, so the flip there is `rotation=0`. Use one or the
+other, not both; two flips cancel.
 
 Pi 4 and earlier encode the stream in hardware. Pi 5 has no hardware JPEG
 encoder, so it uses a software one on an RGB low-resolution stream; the module
@@ -328,7 +459,8 @@ an allocation error, lower `still` or add `cma=320M` to the kernel command line.
 |---|---|---|
 | GET | `/` | Client page |
 | GET | `/status` | Panel page |
-| GET | `/api/state` | The state snapshot, once |
+| GET | `/api/state` | The state snapshot, once. Includes `angles` per leg and the 18 `pulses` last sent |
+| GET | `/api/config` | Static: leg names, coxa positions, servo channels and directions, pulse clamp |
 | WS | `/telemetry` | The state snapshot, pushed at 10 Hz, nothing accepted |
 | WS | `/ws` | Commands in, state out. What the client page uses |
 | GET | `/stream` | MJPEG live view |
@@ -385,6 +517,20 @@ The stance block is ours, not a copy of Chica's `MODE_STANDARD`. It puts every f
 - A velocity command expires 0.5 s after it arrives, whether it came over `/ws` or `/move`. A dropped websocket, a frozen page or a client that stops posting means the robot stops walking. In a steel tank the link is the thing most likely to fail.
 - The board's IO thread cuts torque if it goes `control.watchdog_ms` without a fresh servo frame. A hung control loop or a crashed server parks the robot.
 - E-stop latches. Clear it before the robot will stand again.
+- **Trips.** The board reports one total current for all 18 servos and the
+  pack voltage. Its IO thread latches the e-stop, torque on, when the total's
+  mean over `safety.current_cut_s` (1 s) exceeds `current_cut_a` (10 A), when
+  the voltage's mean over `volts_cut_s` (2 s) drops under `volts_cut` (6.0 V),
+  or when telemetry stops for 2 s. That covers `hexapod serve`, `jog` and
+  `neutral`. The reason shows as the status line and as `safety_trip` in
+  `/api/state` until you clear the e-stop (`clear` in jog). **10 A needs three
+  simultaneous stalls on the stand**: one stalled servo adds about 4 A, two
+  read about 8 A. `poke.py --centre` adds a 1.5 A static-pose cut that does
+  catch one. The total cannot name the servo; run `poke.py --probe`
+  afterwards. The board also refuses torque while it is offline, and does not
+  replay an earlier request when the port comes back. Three femurs
+  died on 26 Sep 2026 with nothing acting on current; see
+  [docs/troubleshooting.md](docs/troubleshooting.md).
 - Body shift plus tilt at low ride height can push a leg past its joint limits. The UI shows that leg in yellow and `hexapod check` prints how often it happens.
 - If your servo supply is above 5 V, cut the *Separate USB and Ext. Power* trace on the back of the Servo2040 first.
 
@@ -409,8 +555,9 @@ The stance block is ours, not a copy of Chica's `MODE_STANDARD`. It puts every f
 | [hexapod/static/index.html](hexapod/static/index.html) | The client. One file, no build step, no CDN. |
 | [hexapod/static/status.html](hexapod/static/status.html) | The 320x480 panel page. |
 | [deploy/](deploy/) | systemd units, kiosk launcher, installer. |
-| [tools/poke.py](tools/poke.py) | Standalone link test. Only needs pyserial. |
+| [tools/poke.py](tools/poke.py) | Standalone link test; `--census` maps headers to joints by eye, `--probe` finds dead headers by current. Only needs pyserial. |
 | [tools/i2cwatch.py](tools/i2cwatch.py) | Rolling i2c success rate. Finds a loose IMU lead. No dependencies. |
+| [tools/servolog.py](tools/servolog.py) | Prints every servo that moves while you press buttons, and a summary. Stdlib only. |
 | [tools/preflight.py](tools/preflight.py) | Checks env, config, maths, IMU, camera and board in one run. |
 | [tools/sync.sh](tools/sync.sh) | rsync the working tree to the Pi over ssh. |
 

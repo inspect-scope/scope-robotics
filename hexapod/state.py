@@ -169,5 +169,6 @@ class RobotState:
         base["addresses"] = [list(entry) for entry in addresses]
         base["uptime_s"] = round(now - self._started_at, 1)
         # The board error matters most, then the sensors. One line for the panel.
-        base["last_error"] = base["error"] or base["imu"]["error"] or base["camera"]["error"]
+        # A safety trip outranks everything: it is why the robot just went limp.
+        base["last_error"] = base.get("safety_trip") or base["error"] or base["imu"]["error"] or base["camera"]["error"]
         return base

@@ -20,13 +20,29 @@ control:
   telemetry_hz: 5          # how often to GET volts/amps/touch
   watchdog_ms: 300         # no fresh servo frame for this long -> torque off
 
+# Trips, run on the board's IO thread for serve, jog and neutral. The board reports
+# one TOTAL current for all 18 servos, and the pack voltage. Mean over cut_s past
+# the cut -> estop (torque off, latched; clear it from the client page).
+# Idle is about 0.2 A on the stand. Walking current is not measured yet. One
+# stalled FT5330M adds about 4 A (3.9 A spec at 7.4 V) and two read about 8 A,
+# so the 10 A cut needs three simultaneous stalls, not one. Three femurs died on
+# 26 Sep 2026 with nothing acting on current; see docs/troubleshooting.md.
+safety:
+  current_cut_a: 10        # Chica's host app cut at 10 A after 2 s
+  current_cut_s: 1.0
+  volts_warn: 6.4          # logged
+  volts_cut: 6.0           # estop when the mean over volts_cut_s is below this, torque on
+  volts_cut_s: 2.0
+
 limits:
   # Hard clamp on anything sent to a servo channel. With Chica's 2000/1000
   # calibration this is +/-81 deg of servo travel. Most 35kg digital servos take
   # 500-2500us; narrow this if yours buzz or stall at the ends.
   pulse_us: [600, 2400]
   # Joint limits, chosen to sit just inside what pulse_us can actually reach so
-  # the two clamps agree. `hexapod check` flags them if they drift apart.
+  # the two clamps agree. `hexapod check` flags them if they drift apart. With
+  # tibia_attach_angle 134 they do: the pulse clamp stops the knee at about 53,
+  # so the 30 below is unreachable until the tibia horns are refitted at 68.
   coxa_deg: [-50, 50]
   femur_deg: [-35, 115]
   tibia_deg: [30, 148]
@@ -41,7 +57,11 @@ geometry:
   # Angle between servo horn and leg segment with the servo centred, degrees.
   coxa_attach_angle: -8
   femur_attach_angle: 35
-  tibia_attach_angle: 68
+  # Chica's value is 68. The tibia horns on this build sit with the knee folded
+  # to about the sit angle, estimated (+-5 deg) from photos of two legs at 1500 us
+  # on 26 Sep 2026; refine with a protractor on the knee at centre. Refitting the horns at 68 would give
+  # the leg back its straight-knee range; until then it cannot reach below ~53.
+  tibia_attach_angle: 134
 
 stance:
   ride_height: 80          # body origin above the feet when standing, mm
@@ -73,6 +93,15 @@ tripod_groups: [[L1, R2, L3], [R1, L2, R3]]
 # two numbers; 2000/1000 means positive angle -> shorter pulse.
 # `direction` flips the *joint angle* sign before calibration is applied. Set it
 # during bring-up with `hexapod jog`, one joint at a time.
+# Left and right legs are mirror images, so the same shaft rotation moves them
+# opposite ways; one side has to run at -1. On this build it is probably the
+# RIGHT side (inferred 26 Sep 2026 from photos of the sit pose, not yet
+# confirmed). Check with `hexapod jog`, which opens at the sit pose: `R2 -8 35
+# 134` to centre, then `R2 -8 60 134` must lift the thigh. If it drops, right
+# is 1 and left is -1. Chica's own config has no direction field because its app applied
+# the mirror from the L/R in the servo name; this port has to say it here.
+# Flipping direction does not move the 1500 us centre, so horn calibration
+# survives it.
 servos:
   L1: {coxa: {channel: 15, us_neg45: 2000, us_pos45: 1000, direction:  1},
        femur: {channel: 16, us_neg45: 2000, us_pos45: 1000, direction:  1},
@@ -83,15 +112,15 @@ servos:
   L3: {coxa: {channel:  3, us_neg45: 2000, us_pos45: 1000, direction:  1},
        femur: {channel:  4, us_neg45: 2000, us_pos45: 1000, direction:  1},
        tibia: {channel:  5, us_neg45: 2000, us_pos45: 1000, direction:  1}}
-  R1: {coxa: {channel: 12, us_neg45: 2000, us_pos45: 1000, direction:  1},
-       femur: {channel: 13, us_neg45: 2000, us_pos45: 1000, direction:  1},
-       tibia: {channel: 14, us_neg45: 2000, us_pos45: 1000, direction:  1}}
-  R2: {coxa: {channel:  6, us_neg45: 2000, us_pos45: 1000, direction:  1},
-       femur: {channel:  7, us_neg45: 2000, us_pos45: 1000, direction:  1},
-       tibia: {channel:  8, us_neg45: 2000, us_pos45: 1000, direction:  1}}
-  R3: {coxa: {channel:  0, us_neg45: 2000, us_pos45: 1000, direction:  1},
-       femur: {channel:  1, us_neg45: 2000, us_pos45: 1000, direction:  1},
-       tibia: {channel:  2, us_neg45: 2000, us_pos45: 1000, direction:  1}}
+  R1: {coxa: {channel: 12, us_neg45: 2000, us_pos45: 1000, direction: -1},
+       femur: {channel: 13, us_neg45: 2000, us_pos45: 1000, direction: -1},
+       tibia: {channel: 14, us_neg45: 2000, us_pos45: 1000, direction: -1}}
+  R2: {coxa: {channel:  6, us_neg45: 2000, us_pos45: 1000, direction: -1},
+       femur: {channel:  7, us_neg45: 2000, us_pos45: 1000, direction: -1},
+       tibia: {channel:  8, us_neg45: 2000, us_pos45: 1000, direction: -1}}
+  R3: {coxa: {channel:  0, us_neg45: 2000, us_pos45: 1000, direction: -1},
+       femur: {channel:  1, us_neg45: 2000, us_pos45: 1000, direction: -1},
+       tibia: {channel:  2, us_neg45: 2000, us_pos45: 1000, direction: -1}}
 
 # Foot contact switches. Channels 18..23 are TS1..TS6 on the wire.
 touch_sensors:

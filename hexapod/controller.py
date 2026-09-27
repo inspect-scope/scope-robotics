@@ -18,7 +18,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
 from .board import Servo2040
-from .config import Config
+from .config import JOINTS, Config
 from .gait import TripodGait, Velocity
 from .kinematics import BodyPose, HexapodKinematics
 
@@ -52,12 +52,15 @@ class Snapshot:
     limited_legs: List[str]
     feet: Dict[str, List[float]]
     coxae: Dict[str, List[float]]
+    angles: Dict[str, Dict[str, float]]  # joint degrees per leg, what the solver asked for
+    pulses: List[int]  # the 18 pulse widths last handed to the board, indexed by channel
     loop_hz: float
     volts: Optional[float]
     amps: Optional[float]
     contacts: Dict[str, bool]
     telemetry_age_s: float
     error: Optional[str]
+    safety_trip: Optional[str]  # why the board latched its estop, until clear_estop
 
 
 def _clamp(value: float, limit: float) -> float:
@@ -82,8 +85,11 @@ class Controller:
         self._standing = False
         self._limited: List[str] = []
         self._feet: Dict[str, tuple] = self.kinematics.neutral_feet(config.stance.sit_height)
+        self._angles = self.kinematics.solve(self._feet)
+        self._pulses = self.kinematics.pulse_frame(self._angles)
         self._active_source: Optional[str] = None
         self._loop_hz = 0.0
+        self._trip_seen: Optional[str] = None  # the board trip this loop has already reacted to
 
     # --- lifecycle ----------------------------------------------------------------
 
@@ -149,6 +155,17 @@ class Controller:
 
     def clear_estop(self) -> None:
         self.board.clear_estop()
+        with self._lock:
+            self._trip_seen = None
+
+    def _react_to_trip(self) -> None:
+        """The board latches its own estop on a current or voltage trip. Reset the
+        gait state the same way a manual estop does, so clearing it does not snap
+        straight back into the pose that tripped."""
+        trip = self.board.safety_trip
+        if trip and trip != self._trip_seen:
+            self._trip_seen = trip
+            self.estop()
 
     # --- loop ---------------------------------------------------------------------
 
@@ -183,6 +200,7 @@ class Controller:
                 next_tick = time.monotonic()
 
     def _tick(self, dt: float, now: float) -> None:
+        self._react_to_trip()
         raw, _ = self._pick_command(now)
 
         with self._lock:
@@ -201,11 +219,14 @@ class Controller:
 
         feet = self.gait.step(dt, command, height)
         angles, limited = self.kinematics.solve_reporting(feet, pose)
-        self.board.set_frame(self.kinematics.pulse_frame(angles))
+        pulses = self.kinematics.pulse_frame(angles)
+        self.board.set_frame(pulses)
 
         with self._lock:
             self._limited = limited
             self._feet = feet
+            self._angles = angles
+            self._pulses = pulses
             self._loop_hz = 1.0 / dt if dt > 0 else 0.0
 
     # --- state --------------------------------------------------------------------
@@ -215,6 +236,9 @@ class Controller:
         with self._lock:
             height, pose, limited = self._height, self._pose, list(self._limited)
             feet = {name: [round(v, 1) for v in point] for name, point in self._feet.items()}
+            angles = {name: {joint: round(v, 1) for joint, v in zip(JOINTS, a.as_tuple())}
+                      for name, a in self._angles.items()}
+            pulses = list(self._pulses)
             source, loop_hz = self._active_source, self._loop_hz
             standing = self._standing
         estopped = self.board.estopped
@@ -246,10 +270,13 @@ class Controller:
             limited_legs=limited,
             feet=feet,
             coxae={name: list(leg.coxa_xy) for name, leg in self.config.legs.items()},
+            angles=angles,
+            pulses=pulses,
             loop_hz=round(loop_hz, 1),
             volts=round(telemetry.volts, 2) if telemetry.volts is not None else None,
             amps=round(telemetry.amps, 2) if telemetry.amps is not None else None,
             contacts=telemetry.contacts,
             telemetry_age_s=round(telemetry.age_s, 2) if telemetry.updated_at else -1.0,
             error=self.board.error,
+            safety_trip=self.board.safety_trip,
         )

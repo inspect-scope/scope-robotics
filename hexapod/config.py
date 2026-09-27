@@ -113,6 +113,21 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class SafetyConfig:
+    """Trips the board's IO thread applies while torque is on, judged on the mean
+    over each window. The current is the total for all 18 servos: one stalled
+    FT5330M adds about 4 A and two read about 8 A on the stand, so a 10 A cut
+    needs three simultaneous stalls, or two with other load on top. Chica's host
+    app cut at 10 A after 2 s (WARN_CUR) and 6.0 V (WARN_VOL)."""
+
+    current_cut_a: float = 10.0
+    current_cut_s: float = 1.0
+    volts_warn: float = 6.4
+    volts_cut: float = 6.0
+    volts_cut_s: float = 2.0
+
+
+@dataclass(frozen=True)
 class Config:
     port: str
     baudrate: int
@@ -130,6 +145,7 @@ class Config:
     leg_order: List[str] = field(default_factory=list)
     imu: ImuConfig = field(default_factory=ImuConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
+    safety: SafetyConfig = field(default_factory=SafetyConfig)
 
 
 def _axis_map(raw: Any) -> Tuple[str, str, str]:
@@ -182,6 +198,22 @@ def _camera(raw: Dict[str, Any]) -> CameraConfig:
         survey_dir=str(raw.get("survey_dir", defaults.survey_dir)),
         rotation=rotation,
     )
+
+
+def _safety(raw: Dict[str, Any]) -> SafetyConfig:
+    d = SafetyConfig()
+    cfg = SafetyConfig(
+        current_cut_a=float(raw.get("current_cut_a", d.current_cut_a)),
+        current_cut_s=float(raw.get("current_cut_s", d.current_cut_s)),
+        volts_warn=float(raw.get("volts_warn", d.volts_warn)),
+        volts_cut=float(raw.get("volts_cut", d.volts_cut)),
+        volts_cut_s=float(raw.get("volts_cut_s", d.volts_cut_s)),
+    )
+    if min(cfg.current_cut_a, cfg.current_cut_s, cfg.volts_cut, cfg.volts_cut_s) <= 0:
+        raise ValueError("safety cuts and windows must be positive; remove the block to use the defaults")
+    if cfg.volts_warn < cfg.volts_cut:
+        raise ValueError("safety.volts_warn must not be below safety.volts_cut")
+    return cfg
 
 
 def load(path: str = DEFAULT_CONFIG) -> Config:
@@ -243,4 +275,5 @@ def load(path: str = DEFAULT_CONFIG) -> Config:
         leg_order=list(raw["legs"].keys()),
         imu=_imu(dict(raw.get("imu") or {})),
         camera=_camera(dict(raw.get("camera") or {})),
+        safety=_safety(raw.get("safety") or {}),
     )

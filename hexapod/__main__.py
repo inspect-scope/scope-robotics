@@ -10,7 +10,7 @@ import time
 from typing import List, Optional
 
 from . import config as config_mod
-from .board import FakeBoard, Servo2040
+from .board import BoardError, FakeBoard, Servo2040
 from .config import JOINTS, Config
 from .controller import POSE_LIMITS, Controller
 from .gait import TripodGait, Velocity
@@ -134,6 +134,9 @@ def cmd_neutral(args: argparse.Namespace) -> int:
         try:
             while True:
                 board.set_frame(frame)  # keeps feeding the watchdog
+                if board.safety_trip:
+                    print(f"SAFETY TRIP: {board.safety_trip}. Torque is off.")
+                    break
                 time.sleep(0.05)
         except KeyboardInterrupt:
             print("\nreleasing")
@@ -147,6 +150,8 @@ def cmd_jog(args: argparse.Namespace) -> int:
                L1 0 0 0        set all three joints of a leg
                all             back to neutral
                t on | t off    torque
+               clear           clear a safety trip, back to sit (then t on)
+    Jog opens at the sit pose. Centre is the attach angles, e.g. L1 -8 35 134.
                q               quit
     """
     config = _load(args)
@@ -161,9 +166,16 @@ def cmd_jog(args: argparse.Namespace) -> int:
         stop = False
         import threading
 
+        announced = [None]
+
         def feed() -> None:
             while not stop:
                 board.set_frame(kinematics.pulse_frame(angles))
+                trip = board.safety_trip
+                if trip and trip != announced[0]:
+                    announced[0] = trip
+                    print(f"\nSAFETY TRIP: {trip}. Torque is off and latched. Find the cause, then 'clear' and 't on'.",
+                          flush=True)
                 time.sleep(0.05)
 
         pump = threading.Thread(target=feed, daemon=True)
@@ -176,7 +188,17 @@ def cmd_jog(args: argparse.Namespace) -> int:
                 if parts[0] in ("q", "quit", "exit"):
                     break
                 if parts[0] == "t":
-                    board.set_torque(len(parts) > 1 and parts[1] == "on")
+                    try:
+                        board.set_torque(len(parts) > 1 and parts[1] == "on")
+                    except BoardError as exc:
+                        print(f"  {exc}")
+                    continue
+                if parts[0] == "clear":
+                    # Back to the sit pose, so 't on' does not drive straight into what tripped.
+                    angles = kinematics.solve(kinematics.neutral_feet(config.stance.sit_height))
+                    board.clear_estop()
+                    announced[0] = None
+                    print("  estop cleared, legs set back to the sit pose; 't on' to re-enable torque")
                     continue
                 if parts[0] == "all":
                     angles = kinematics.solve(kinematics.neutral_feet(config.stance.sit_height))
@@ -245,7 +267,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     config = _load(args)
     board = _board(config, args)
-    board.open()
+    board.open_tolerant()  # no port, or poke.py holds it: status-page line, retry, not a crash
     controller = Controller(config, board)
     controller.start()
 

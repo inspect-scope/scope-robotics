@@ -22,8 +22,9 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from .board import BoardError
 from .camera import Camera, CameraError
-from .config import Config
+from .config import JOINTS, Config
 from .controller import COMMAND_TTL, POSE_LIMITS, Controller
 from .gait import Velocity
 from .state import RobotState
@@ -113,6 +114,12 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                 "gait": {"cycle_s": s.cycle_s, "step_lift": s.step_lift, "max_speed": s.max_speed},
                 "legs": list(config.leg_order),
                 "coxae": {name: list(leg.coxa_xy) for name, leg in config.legs.items()},
+                # channel and direction per servo, so a tool can name what it sees moving
+                "servos": {name: {joint: {"channel": leg.servos[joint].channel,
+                                          "direction": leg.servos[joint].direction}
+                                  for joint in JOINTS}
+                           for name, leg in config.legs.items()},
+                "pulse_us": list(config.limits.pulse_us),
                 "camera": {"enabled": state.camera is not None, "lores": list(config.camera.lores),
                            "still": list(config.camera.still)},
             }
@@ -265,12 +272,18 @@ def _handle(controller: Controller, config: Config, message: Dict[str, Any]) -> 
     elif kind == "height":
         controller.set_height(message.get("value", config.stance.ride_height))
     elif kind == "stand":
-        controller.stand()
+        try:
+            controller.stand()
+        except BoardError as exc:  # offline or estop latched: the page already shows why
+            log.warning("stand refused: %s", exc)
     elif kind == "sit":
         controller.sit()
     elif kind == "torque":
         if message.get("on"):
-            controller.board.set_torque(True)
+            try:
+                controller.board.set_torque(True)
+            except BoardError as exc:
+                log.warning("torque refused: %s", exc)
         else:
             controller.torque_off()
     elif kind == "estop":

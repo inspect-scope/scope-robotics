@@ -342,7 +342,7 @@ def check_board(config, port_override: Optional[str]) -> None:
         report(WARN, f"{port_path} can move between reboots. Prefer {by_id[0]}")
 
     try:
-        with serial.Serial(port_path, config.baudrate if config else 115200, timeout=0.2) as link:
+        with serial.Serial(port_path, config.baudrate if config else 115200, timeout=0.2, exclusive=True) as link:
             time.sleep(0.3)  # the firmware waits for the CDC connection before it parses
             values = _get(link, protocol, protocol.CH_CURRENT, 2)
             if values is None:
