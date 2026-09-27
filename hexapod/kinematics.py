@@ -74,6 +74,17 @@ class BodyPose:
         bx, by, bz = cr * ax - sr * az, ay, sr * ax + cr * az   # Ry^T
         return (bx, cp * by + sp * bz, -sp * by + cp * bz)      # Rx^T
 
+    def body_to_ground(self, point: Vec3) -> Vec3:
+        """Inverse of `foot_to_body`. Used to draw the commanded pose in the ground frame."""
+        bx, by, bz = point
+        cy, sy = _cos_sin(self.yaw)
+        cr, sr = _cos_sin(self.roll)
+        cp, sp = _cos_sin(self.pitch)
+        ax, ay, az = bx, cp * by - sp * bz, sp * by + cp * bz          # Rx
+        px, py, pz = cr * ax + sr * az, ay, -sr * ax + cr * az         # Ry
+        gx, gy, gz = cy * px - sy * py, sy * px + cy * py, pz          # Rz
+        return (gx + self.x, gy + self.y, gz + self.z)
+
 
 def _cos_sin(deg: float) -> Tuple[float, float]:
     rad = math.radians(deg)
@@ -155,6 +166,29 @@ class LegKinematics:
         coxa_rad = math.radians(angles.coxa)
         return (radial * math.cos(coxa_rad), radial * math.sin(coxa_rad), z)
 
+    def chain(self, angles: JointAngles) -> Tuple[Vec3, Vec3, Vec3, Vec3]:
+        """Joint positions in the body frame: coxa origin, femur, knee, foot.
+
+        Same triangle as `fk`, split at each hinge so a visualiser can draw the
+        commanded pose without reimplementing the kinematics.
+        """
+        g = self.geometry
+        coxa_rad = math.radians(angles.coxa)
+        femur_rad = math.radians(angles.femur)
+        tibia_rad = math.radians(angles.femur - angles.tibia)
+        cc, sc = math.cos(coxa_rad), math.sin(coxa_rad)
+        cf, sf = math.cos(femur_rad), math.sin(femur_rad)
+        ct, st = math.cos(tibia_rad), math.sin(tibia_rad)
+        femur = (g.coxa_len * cc, g.coxa_len * sc, 0.0)
+        knee = (femur[0] + g.femur_len * cf * cc, femur[1] + g.femur_len * cf * sc, g.femur_len * sf)
+        foot = (knee[0] + g.tibia_len * ct * cc, knee[1] + g.tibia_len * ct * sc, knee[2] + g.tibia_len * st)
+        return (
+            self.leg_to_body((0.0, 0.0, 0.0)),
+            self.leg_to_body(femur),
+            self.leg_to_body(knee),
+            self.leg_to_body(foot),
+        )
+
     # --- servo mapping ------------------------------------------------------------
 
     def clamp_angles(self, angles: JointAngles) -> JointAngles:
@@ -222,3 +256,10 @@ class HexapodKinematics:
             for channel, pulse in self.legs[name].pulses(value).items():
                 frame[channel] = pulse
         return frame
+
+    def chains(self, angles: Dict[str, JointAngles], pose: BodyPose = BodyPose()) -> Dict[str, List[Vec3]]:
+        """Commanded joint positions in the ground frame, four points per leg."""
+        return {
+            name: [pose.body_to_ground(point) for point in self.legs[name].chain(value)]
+            for name, value in angles.items()
+        }

@@ -3,7 +3,7 @@ import math
 import pytest
 
 from hexapod import config as config_mod
-from hexapod.gait import STANCE_FRACTION, TripodGait, Velocity
+from hexapod.gait import GaitKind, STANCE_FRACTION, TripodGait, Velocity
 
 
 @pytest.fixture()
@@ -78,3 +78,27 @@ def test_diagonal_input_does_not_exceed_full_speed(setup):
     config, _ = setup
     command = Velocity(1, 1, 0).scaled(config)
     assert math.hypot(command.vx, command.vy) == pytest.approx(config.stance.max_speed)
+
+
+def test_ripple_keeps_five_feet_down(setup):
+    config, gait = setup
+    gait.set_pattern(GaitKind.Ripple)
+    ground = -config.stance.ride_height
+    for feet in _run(gait, config, Velocity(0, 1, 0).scaled(config), 4):
+        down = [name for name, p in feet.items() if p[2] <= ground + 1e-6]
+        assert len(down) >= 5, down
+
+
+def test_wave_keeps_five_feet_down(setup):
+    config, gait = setup
+    gait.set_pattern(GaitKind.Wave)
+    ground = -config.stance.ride_height
+    for feet in _run(gait, config, Velocity(0, 1, 0).scaled(config), 4):
+        down = [name for name, p in feet.items() if p[2] <= ground + 1e-6]
+        assert len(down) >= 5, down
+
+
+def test_unknown_pattern_is_rejected(setup):
+    _, gait = setup
+    with pytest.raises(ValueError):
+        gait.set_pattern("gallop")

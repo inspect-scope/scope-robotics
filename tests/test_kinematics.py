@@ -33,6 +33,29 @@ def test_neutral_stance_is_within_every_joint_limit(kinematics):
         assert limited == [], height
 
 
+def test_chain_foot_matches_fk(kinematics):
+    for name, leg in kinematics.legs.items():
+        angles = kinematics.solve(kinematics.neutral_feet())[name]
+        foot = leg.chain(angles)[3]
+        assert math.dist(foot, leg.leg_to_body(leg.fk(angles))) < 1e-6, name
+
+
+def test_body_to_ground_inverts_foot_to_body():
+    pose = BodyPose(x=5, y=-3, roll=4, pitch=-6, yaw=10)
+    point = (120.0, -80.0, -70.0)
+    assert math.dist(pose.body_to_ground(pose.foot_to_body(point)), point) < 1e-6
+
+
+def test_unclamped_chain_lands_on_the_foot_target(kinematics):
+    pose = BodyPose(roll=3, pitch=-2, yaw=4, x=5, y=-4)
+    feet = kinematics.neutral_feet(80)
+    angles, limited = kinematics.solve_reporting(feet, pose)
+    assert limited == []
+    chains = kinematics.chains(angles, pose)
+    for name, target in feet.items():
+        assert math.dist(chains[name][3], target) < 0.05, name
+
+
 def test_pose_axes_point_the_way_their_names_say(kinematics):
     front = (0.0, 200.0, -80.0)
     right = (200.0, 0.0, -80.0)

@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 from .board import Servo2040
 from .config import JOINTS, Config
 from .gait import TripodGait, Velocity
-from .kinematics import BodyPose, HexapodKinematics
+from .kinematics import BodyPose, HexapodKinematics, JointAngles
 
 log = logging.getLogger(__name__)
 
@@ -45,6 +45,7 @@ class Snapshot:
     estopped: bool
     connected: bool
     walking: bool
+    gait: str
     height: float
     pose: Dict[str, float]
     velocity: Dict[str, float]
@@ -53,11 +54,15 @@ class Snapshot:
     feet: Dict[str, List[float]]
     coxae: Dict[str, List[float]]
     angles: Dict[str, Dict[str, float]]  # joint degrees per leg, what the solver asked for
-    pulses: List[int]  # the 18 pulse widths last handed to the board, indexed by channel
+    joints: Dict[str, Dict[str, float]]
+    actuators: Dict[str, Dict[str, Dict[str, float]]]
+    pulses: List[int]
+    chains: Dict[str, List[List[float]]]
     loop_hz: float
     volts: Optional[float]
     amps: Optional[float]
     contacts: Dict[str, bool]
+    touch_volts: Dict[str, float]
     telemetry_age_s: float
     error: Optional[str]
     safety_trip: Optional[str]  # why the board latched its estop, until clear_estop
@@ -85,8 +90,9 @@ class Controller:
         self._standing = False
         self._limited: List[str] = []
         self._feet: Dict[str, tuple] = self.kinematics.neutral_feet(config.stance.sit_height)
-        self._angles = self.kinematics.solve(self._feet)
-        self._pulses = self.kinematics.pulse_frame(self._angles)
+        self._angles: Dict[str, JointAngles] = self.kinematics.solve(self._feet)
+        self._pulses: List[int] = self.kinematics.pulse_frame(self._angles)
+        self._chains: Dict[str, List[tuple]] = self.kinematics.chains(self._angles, self._pose)
         self._active_source: Optional[str] = None
         self._loop_hz = 0.0
         self._trip_seen: Optional[str] = None  # the board trip this loop has already reacted to
@@ -141,6 +147,9 @@ class Controller:
 
     def sit(self) -> None:
         self.set_height(self.config.stance.sit_height)
+
+    def set_pattern(self, pattern: str) -> None:
+        self.gait.set_pattern(pattern)
 
     def torque_off(self) -> None:
         self.board.set_torque(False)
@@ -221,12 +230,16 @@ class Controller:
         angles, limited = self.kinematics.solve_reporting(feet, pose)
         pulses = self.kinematics.pulse_frame(angles)
         self.board.set_frame(pulses)
+        simulate = getattr(self.board, "simulate_contacts", None)
+        if simulate is not None:
+            simulate(feet, height)
 
         with self._lock:
             self._limited = limited
             self._feet = feet
             self._angles = angles
             self._pulses = pulses
+            self._chains = self.kinematics.chains(angles, pose)
             self._loop_hz = 1.0 / dt if dt > 0 else 0.0
 
     # --- state --------------------------------------------------------------------
@@ -236,9 +249,12 @@ class Controller:
         with self._lock:
             height, pose, limited = self._height, self._pose, list(self._limited)
             feet = {name: [round(v, 1) for v in point] for name, point in self._feet.items()}
-            angles = {name: {joint: round(v, 1) for joint, v in zip(JOINTS, a.as_tuple())}
-                      for name, a in self._angles.items()}
+            solved = dict(self._angles)
             pulses = list(self._pulses)
+            chains = {
+                name: [[round(v, 1) for v in point] for point in points]
+                for name, points in self._chains.items()
+            }
             source, loop_hz = self._active_source, self._loop_hz
             standing = self._standing
         estopped = self.board.estopped
@@ -259,6 +275,7 @@ class Controller:
             estopped=estopped,
             connected=self.board.connected,
             walking=self.gait.walking,
+            gait=self.gait.pattern,
             height=round(height, 1),
             pose={k: round(v, 2) for k, v in asdict(pose).items()},
             velocity={
@@ -270,13 +287,45 @@ class Controller:
             limited_legs=limited,
             feet=feet,
             coxae={name: list(leg.coxa_xy) for name, leg in self.config.legs.items()},
-            angles=angles,
+            angles={
+                name: {joint: round(value, 1) for joint, value in zip(JOINTS, solved[name].as_tuple())}
+                for name in solved
+            },
+            joints={
+                name: {joint: round(value, 2) for joint, value in zip(JOINTS, solved[name].as_tuple())}
+                for name in solved
+            },
+            actuators=self._actuators(solved, pulses),
             pulses=pulses,
+            chains=chains,
             loop_hz=round(loop_hz, 1),
             volts=round(telemetry.volts, 2) if telemetry.volts is not None else None,
             amps=round(telemetry.amps, 2) if telemetry.amps is not None else None,
             contacts=telemetry.contacts,
+            touch_volts={name: round(volt, 2) for name, volt in telemetry.touch_volts.items()},
             telemetry_age_s=round(telemetry.age_s, 2) if telemetry.updated_at else -1.0,
             error=self.board.error,
             safety_trip=self.board.safety_trip,
         )
+
+    def _actuators(self, angles: Dict[str, JointAngles], pulses: List[int]) -> Dict[str, Dict[str, Dict[str, float]]]:
+        """Per-joint commanded pulse and both angle spaces, labelled for the client.
+
+        The firmware has no GET for servo position. `us` is the last SET. `joint`
+        is the IK target. `servo` is that angle after attach and direction.
+        """
+        out: Dict[str, Dict[str, Dict[str, float]]] = {}
+        for name, value in angles.items():
+            leg = self.kinematics.legs[name]
+            row: Dict[str, Dict[str, float]] = {}
+            for joint, joint_deg in zip(JOINTS, value.as_tuple()):
+                cal = leg.leg.servos[joint]
+                servo_deg = leg.servo_angle(joint, joint_deg)
+                row[joint] = {
+                    "ch": cal.channel,
+                    "us": pulses[cal.channel],
+                    "joint": round(joint_deg, 2),
+                    "servo": round(servo_deg, 2),
+                }
+            out[name] = row
+        return out

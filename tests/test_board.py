@@ -52,3 +52,15 @@ def test_estop_latches_until_cleared(board):
 def test_frame_must_have_one_pulse_per_servo(board):
     with pytest.raises(ValueError):
         board.set_frame([1500] * 17)
+
+
+def test_fake_contacts_follow_commanded_foot_height():
+    device = FakeBoard(config_mod.load())
+    height = 80.0
+    feet = {name: (0.0, 0.0, -height) for name in device.config.touch}
+    feet["L1"] = (0.0, 0.0, -height + 12.0)
+    device.simulate_contacts(feet, height)
+    assert device.telemetry.contacts["L1"] is False
+    assert device.telemetry.contacts["R1"] is True
+    assert device.telemetry.touch_volts["L1"] < device.config.touch_threshold_v
+    assert device.telemetry.touch_volts["R1"] >= device.config.touch_threshold_v

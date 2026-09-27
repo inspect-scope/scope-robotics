@@ -63,8 +63,16 @@ def test_pages_and_state_are_served(client):
     assert status.status_code == 200 and b"STOP" in status.content
     body = client.get("/api/state").json()
     assert body["state"] == "off"
-    assert set(body["feet"]) == set(body["coxae"])
-    assert {"imu", "camera", "ip", "uptime_s", "last_error"} <= set(body)
+    assert set(body["feet"]) == set(body["coxae"]) == set(body["joints"]) == set(body["chains"])
+    assert {"imu", "camera", "ip", "uptime_s", "last_error", "actuators", "pulses", "touch_volts"} <= set(body)
+    assert len(body["pulses"]) == 18
+    assert all(len(points) == 4 and len(points[0]) == 3 for points in body["chains"].values())
+    l1 = body["actuators"]["L1"]["coxa"]
+    assert {"ch", "us", "joint", "servo"} <= set(l1)
+    cfg = client.get("/api/config").json()
+    assert cfg["servos"]["L1"]["coxa"]["channel"] == l1["ch"]
+    assert cfg["pulse_us"] == [600, 2400]
+    assert cfg["geometry"]["coxa_len"] == 43
 
 
 def test_stop_and_estop_work_over_plain_http(client):
@@ -158,6 +166,23 @@ def test_telemetry_socket_only_pushes(client):
         assert socket.receive_json()["type"] == "state"
 
 
+def test_dry_run_contacts_open_in_swing(client):
+    snap = client.get("/api/state").json()
+    assert snap["contacts"] and all(snap["contacts"].values())
+
+    with client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "stand"})
+        assert _wait_for(lambda: client.controller.snapshot().state == "standing")
+        assert all(client.controller.snapshot().contacts.values())
+
+        def tripod():
+            socket.send_json({"type": "drive", "vx": 0, "vy": 1, "yaw": 0})
+            down = client.controller.snapshot().contacts
+            return any(down.values()) and not all(down.values())
+
+        assert _wait_for(tripod)
+
+
 def test_websocket_drives_the_robot(client):
     with client.websocket_connect("/ws") as socket:
         socket.send_json({"type": "stand"})
@@ -174,6 +199,16 @@ def test_websocket_drives_the_robot(client):
         time.sleep(0.2)
         assert client.controller.snapshot().pose["roll"] == 4
         assert socket.receive_json()["type"] == "state"
+
+
+def test_gait_pattern_switches(client):
+    with client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "gait", "pattern": "ripple"})
+        assert _wait_for(lambda: client.controller.snapshot().gait == "ripple")
+        assert "ripple" in client.get("/api/config").json()["gait"]["patterns"]
+        socket.send_json({"type": "gait", "pattern": "walk3"})
+        time.sleep(0.1)
+        assert client.controller.snapshot().gait == "ripple"
 
 
 def test_pose_and_gait_values_are_clamped(client):

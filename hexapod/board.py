@@ -26,6 +26,9 @@ NEUTRAL_PULSE = 1500
 STALE_TELEMETRY_S = 2.0  # torque on and no fresh current/voltage reading for this long: estop, we are blind
 _TELEMETRY_START = protocol.TOUCH_BASE          # 18
 _TELEMETRY_COUNT = protocol.CH_VOLTAGE - protocol.TOUCH_BASE + 1  # touch x6 + current + voltage
+CONTACT_EPS_MM = 1.0  # commanded tip this close to the ground plane counts as switch closed
+_TOUCH_DOWN_V = 3.3
+_TOUCH_UP_V = 0.2
 
 
 @dataclass
@@ -358,6 +361,38 @@ class FakeBoard(Servo2040):
     fake_amps_on = 1.2    # a float, or a callable returning one per reading
     fake_telemetry_frozen = False  # stop producing readings, as a dead sensor would
 
+    def __init__(self, config: Config, port: Optional[str] = None):
+        super().__init__(config, port)
+        self._sim_contacts: Dict[str, bool] = {name: True for name in config.touch}
+
+    def simulate_contacts(self, feet: Dict[str, Sequence[float]], height: float) -> None:
+        """Close each foot switch when the commanded tip is on the ground plane.
+
+        Live hardware reads the microswitch. Dry-run has no rod, so the gait's
+        foot z is the stand-in.
+        """
+        ground = -height
+        contacts = {
+            name: float(point[2]) <= ground + CONTACT_EPS_MM
+            for name, point in feet.items()
+            if name in self.config.touch
+        }
+        with self._lock:
+            self._sim_contacts = contacts
+            prev = self._telemetry
+            # Contacts only. A new updated_at here would look like a current
+            # reading and dilute the safety trip windows.
+            self._telemetry = Telemetry(
+                volts=prev.volts,
+                amps=prev.amps,
+                contacts=contacts,
+                touch_volts={
+                    name: _TOUCH_DOWN_V if contacts.get(name) else _TOUCH_UP_V
+                    for name in self.config.touch
+                },
+                updated_at=prev.updated_at,
+            )
+
     def open(self) -> None:
         log.info("dry run: no serial port opened")
         self._stop.clear()
@@ -380,11 +415,15 @@ class FakeBoard(Servo2040):
             if now - self._last_telemetry_req >= telemetry_period and not self.fake_telemetry_frozen:
                 self._last_telemetry_req = now
                 amps_on = self.fake_amps_on() if callable(self.fake_amps_on) else self.fake_amps_on
+                contacts = dict(self._sim_contacts)
                 self._telemetry = Telemetry(
                     volts=self.fake_volts,
                     amps=amps_on if want else 0.05,
-                    contacts={name: True for name in self.config.touch},
-                    touch_volts={name: 3.3 for name in self.config.touch},
+                    contacts=contacts,
+                    touch_volts={
+                        name: _TOUCH_DOWN_V if contacts.get(name) else _TOUCH_UP_V
+                        for name in self.config.touch
+                    },
                     updated_at=now,
                 )
         self._guard(time.monotonic())
