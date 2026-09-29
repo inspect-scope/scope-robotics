@@ -535,17 +535,18 @@ The stance block is ours, not a copy of Chica's `MODE_STANDARD`. It puts every f
 - **Trips.** The board reports one total current for all 18 servos and the
   pack voltage. Its IO thread latches the e-stop, torque on, when the total's
   mean over `safety.current_cut_s` (1 s) exceeds `current_cut_a` (10 A), when
+  pulses have been still for `still_s` (1 s) and the mean exceeds `sit_cut_a`
+  (1.5 A, sat / legs free) or `stand_cut_a` (5.5 A, standing still), when
   the voltage's mean over `volts_cut_s` (2 s) drops under `volts_cut` (6.0 V),
   or when telemetry stops for 2 s. That covers `hexapod serve`, `jog` and
   `neutral`. The reason shows as the status line and as `safety_trip` in
-  `/api/state` until you clear the e-stop (`clear` in jog). **10 A needs three
-  simultaneous stalls on the stand**: one stalled servo adds about 4 A, two
-  read about 8 A. `poke.py --centre` adds a 1.5 A static-pose cut that does
-  catch one. The total cannot name the servo; run `poke.py --probe`
-  afterwards. The board also refuses torque while it is offline, and does not
-  replay an earlier request when the port comes back. Three femurs
-  died on 26 Sep 2026 with nothing acting on current; see
-  [docs/troubleshooting.md](docs/troubleshooting.md).
+  `/api/state` until you clear the e-stop (`clear` in jog). The 10 A ceiling
+  still needs three simultaneous stalls. The settled sit/stand cuts catch
+  one hung servo at a held pose, which is how the femurs died. Walking
+  (pulses moving) only uses the 10 A ceiling. The total cannot name the
+  servo; run `poke.py --probe` afterwards. The board also refuses torque
+  while it is offline, and does not replay an earlier request when the port
+  comes back. See [docs/troubleshooting.md](docs/troubleshooting.md).
 - Body shift plus tilt at low ride height can push a leg past its joint limits. The UI shows that leg in yellow and `hexapod check` prints how often it happens.
 - If your servo supply is above 5 V, cut the *Separate USB and Ext. Power* trace on the back of the Servo2040 first.
 

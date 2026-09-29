@@ -17,7 +17,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
-from .board import Servo2040
+from .board import LoadKind, Servo2040
 from .config import JOINTS, Config
 from .gait import Gait, TrickKind, Velocity
 from .kinematics import BodyPose, HexapodKinematics, JointAngles
@@ -288,6 +288,7 @@ class Controller:
         angles, limited = self.kinematics.solve_reporting(feet, pose)
         pulses = self.kinematics.pulse_frame(angles)
         self.board.set_frame(pulses)
+        self.board.set_load(LoadKind.Stand if standing else LoadKind.Sit)
         simulate = getattr(self.board, "simulate_contacts", None)
         if simulate is not None:
             simulate(feet, height)
