@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from .camera import Camera
 from .config import Config
 from .controller import Controller
+from .hand import Puppet
 from .imu import Imu
 from .net import interface_addresses
 
@@ -38,6 +39,7 @@ class RobotState:
         self.controller = controller
         self.imu = imu
         self.camera = camera
+        self.hand = None
 
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -61,6 +63,8 @@ class RobotState:
             except Exception as exc:
                 self.camera.error = f"{type(exc).__name__}: {exc}"
                 log.error("camera unavailable: %s", exc)
+        if self.hand is not None:
+            self.hand.start()
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="state-poll", daemon=True)
         self._thread.start()
@@ -72,6 +76,8 @@ class RobotState:
             self._thread = None
         if self.imu is not None:
             self.imu.close()
+        if self.hand is not None:
+            self.hand.stop()
         if self.camera is not None:
             self.camera.close()
 
@@ -158,6 +164,12 @@ class RobotState:
             "error": att["error"] if self.imu is not None else "no imu configured",
         }
         camera = self.camera
+        hand = self.hand
+        base["hand"] = hand.snapshot() if hand is not None else {
+            "follow": "off", "tracking": False, "error": None,
+            "source": None, "pose": None, "points": [], "connections": [],
+            "mode": Puppet.Lean,
+        }
         base["camera"] = {
             "ok": bool(camera and camera.ok),
             "streaming": bool(camera and camera.streaming),

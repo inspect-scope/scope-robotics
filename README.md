@@ -46,6 +46,18 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/hexapod --dry-run serve
 ```
 
+`--hand` opens a laptop-camera modal. Lean maps the palm onto chassis pose.
+Pincer maps index and middle onto L1/R1. Toggle in the modal. The robot live
+view stays the robot camera. Pose stays inside the operator limits and does
+not change ride height. Fetch the MediaPipe wasm and landmarker once
+(`tools/fetch-hand-assets.sh`); they are gitignored.
+
+```sh
+tools/fetch-hand-assets.sh
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/hexapod --dry-run serve --hand
+```
+
 Open the URL it prints. `/` is the client, `/status` is the panel page. The
 dry run fakes the board, a rocking IMU and a placeholder camera, so every page
 and endpoint works with nothing attached.
@@ -464,7 +476,7 @@ an allocation error, lower `still` or add `cma=320M` to the kernel command line.
 | GET | `/status` | Panel page |
 | GET | `/api/state` | The state snapshot, once. Includes `angles` per leg and the 18 `pulses` last sent |
 | GET | `/api/config` | Static: leg names, coxa positions, servo channels and directions, pulse clamp |
-| WS | `/telemetry` | The state snapshot, pushed at 10 Hz, nothing accepted |
+| WS | `/telemetry` | The state snapshot, pushed at 30 Hz, nothing accepted |
 | WS | `/ws` | Commands in, state out. What the client page uses |
 | GET | `/stream` | MJPEG live view |
 | POST | `/capture` | Full-resolution still. Returns `{path, bytes}` |
@@ -553,6 +565,8 @@ The stance block is ours, not a copy of Chica's `MODE_STANDARD`. It puts every f
 | [hexapod/controller.py](hexapod/controller.py) | 50 Hz control loop and gait state. |
 | [hexapod/imu.py](hexapod/imu.py) | MPU-6050 over i2c. Bias calibration, pitch and roll. `FakeImu` for dry runs. |
 | [hexapod/camera.py](hexapod/camera.py) | Owns `Picamera2`. Live stream and stills. `FakeCamera` for dry runs. |
+| [hexapod/webcam.py](hexapod/webcam.py) | Optional USB cam for `/hand/stream`. `--webcam`. |
+| [hexapod/hand.py](hexapod/hand.py) | MediaPipe Hands → `POSE_LIMITS`. `--hand`. |
 | [hexapod/state.py](hexapod/state.py) | Polls the IMU at 10 Hz and merges board, gait, IMU, camera and network into one snapshot. |
 | [hexapod/net.py](hexapod/net.py) | Which addresses the server is reachable at. |
 | [hexapod/server.py](hexapod/server.py) | HTTP, MJPEG and WebSockets. |
