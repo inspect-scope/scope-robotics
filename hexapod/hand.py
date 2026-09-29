@@ -21,13 +21,22 @@ from .kinematics import BodyPose
 
 log = logging.getLogger(__name__)
 
-DEADZONE = 0.18
-SMOOTH = 0.25
+DEADZONE = 0.06
+SMOOTH = 0.72
+PINCER_SMOOTH = 0.9
 LOST_AFTER_S = 0.4
 LANDMARKS = 21
-PINCER_GAIN = 1.6
+PINCER_GAIN = 2.6
+SIDE_GAIN = 3.2
 PINCER_SPAN_MIN = 0.04
-TILT_SPAN_DEG = 45.0
+PINCER_Z_GAIN = 2.8
+WORLD_Z_SPAN = 0.04
+STRETCH_MID = 0.72
+STRETCH_SPAN = 0.22
+REACH_STRETCH = 0.7
+REACH_DEPTH = 0.3
+TILT_SPAN_DEG = 22.0
+LEAN_POS_GAIN = 1.7
 POINT = Tuple[float, float, float]
 
 # MediaPipe Hands: wrist, then thumb / index / middle / ring / pinky.
@@ -40,11 +49,13 @@ HAND_BONES: Tuple[Tuple[int, int], ...] = (
 )
 
 WRIST = 0
-INDEX_MCP, INDEX_TIP = 5, 8
-MIDDLE_MCP, MIDDLE_TIP = 9, 12
+INDEX_MCP, INDEX_PIP, INDEX_TIP = 5, 6, 8
+MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP = 9, 10, 12
 RING_MCP = 13
 PINKY_MCP = 17
 PALM = (WRIST, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP)
+FINGER_INDEX = (INDEX_MCP, INDEX_PIP, INDEX_TIP)
+FINGER_MIDDLE = (MIDDLE_MCP, MIDDLE_PIP, MIDDLE_TIP)
 
 
 class Follow:
@@ -60,6 +71,15 @@ class Sense:
 class Puppet:
     Lean = "lean"
     Pincer = "pincer"
+
+
+@dataclass(frozen=True)
+class HandIntent:
+    nx: float
+    ny: float
+    roll: float
+    pitch: float
+    yaw: float
 
 
 @dataclass(frozen=True)
@@ -114,12 +134,74 @@ def _palm_xy(points: Sequence[POINT]) -> Tuple[float, float]:
     return sum(p[0] for p in palm) / 5.0, sum(p[1] for p in palm) / 5.0
 
 
+def _vsub(a: POINT, b: POINT) -> POINT:
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _vdot(a: POINT, b: POINT) -> float:
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _vmul(a: POINT, s: float) -> POINT:
+    return (a[0] * s, a[1] * s, a[2] * s)
+
+
+def _vnorm(v: POINT) -> POINT:
+    mag = math.sqrt(_vdot(v, v)) or 1.0
+    return (v[0] / mag, v[1] / mag, v[2] / mag)
+
+
+def _seg(a: POINT, b: POINT) -> float:
+    return math.sqrt(_vdot(_vsub(a, b), _vsub(a, b)))
+
+
+def _palm_origin(points: Sequence[POINT]) -> POINT:
+    palm = [points[i] for i in PALM]
+    return (
+        sum(p[0] for p in palm) / 5.0,
+        sum(p[1] for p in palm) / 5.0,
+        sum(p[2] for p in palm) / 5.0,
+    )
+
+
+def _reject(v: POINT, n: POINT) -> POINT:
+    return _vsub(v, _vmul(n, _vdot(v, n)))
+
+
+def _palm_axes(points: Sequence[POINT]) -> Tuple[POINT, POINT, POINT]:
+    """ex across the palm (toward the pinky), ey along the fingers, ez off the plane."""
+
+    ez = _palm_normal(points)
+    along = _reject(_vsub(points[MIDDLE_MCP], points[WRIST]), ez)
+    if _vdot(along, along) < 1e-10:
+        along = _reject(_vsub(points[INDEX_MCP], points[WRIST]), ez)
+    ey = _vnorm(along)
+    ex = _vnorm((
+        ez[1] * ey[2] - ez[2] * ey[1],
+        ez[2] * ey[0] - ez[0] * ey[2],
+        ez[0] * ey[1] - ez[1] * ey[0],
+    ))
+    return ex, ey, ez
+
+
+def _in_palm(point: POINT, origin: POINT, ex: POINT, ey: POINT, ez: POINT) -> POINT:
+    d = _vsub(point, origin)
+    return (_vdot(d, ex), _vdot(d, ey), _vdot(d, ez))
+
+
+def finger_stretch(points: Sequence[POINT], mcp: int, pip: int, tip: int) -> float:
+    full = _seg(points[mcp], points[pip]) + _seg(points[pip], points[tip])
+    if full < 1e-4:
+        return 0.0
+    return min(1.0, _seg(points[mcp], points[tip]) / full)
+
+
 def _rest_pincers() -> Dict[str, Tuple[float, float, float]]:
     return {name: (0.0, 0.0, 0.0) for name in PINCER_LEGS}
 
 
-def _mix(current: float, target: float) -> float:
-    return current + (target - current) * SMOOTH
+def _mix(current: float, target: float, rate: float = SMOOTH) -> float:
+    return current + (target - current) * rate
 
 
 def pose_from_blob(blob: HandBlob) -> BodyPose:
@@ -138,12 +220,12 @@ def pose_from_blob(blob: HandBlob) -> BodyPose:
     )
 
 
-def pose_from_hand(points: Sequence[POINT], world: Optional[Sequence[POINT]] = None) -> BodyPose:
+def hand_intent(points: Sequence[POINT], world: Optional[Sequence[POINT]] = None) -> HandIntent:
     if len(points) < LANDMARKS:
         raise ValueError(f"need {LANDMARKS} MediaPipe landmarks")
     cx, cy = _palm_xy(points)
-    nx = _dead((cx - 0.5) * 2.0)
-    ny = _dead((0.5 - cy) * 2.0)
+    nx = _dead((cx - 0.5) * 2.0 * LEAN_POS_GAIN)
+    ny = _dead((0.5 - cy) * 2.0 * LEAN_POS_GAIN)
 
     basis = world if world is not None and len(world) >= LANDMARKS else points
     normal = _palm_normal(basis)
@@ -153,34 +235,54 @@ def pose_from_hand(points: Sequence[POINT], world: Optional[Sequence[POINT]] = N
     dx = points[MIDDLE_MCP][0] - points[WRIST][0]
     dy = points[WRIST][1] - points[MIDDLE_MCP][1]
     yaw_n = _dead(math.atan2(dx, dy) / (math.pi / 2.0))
+    return HandIntent(nx=nx, ny=ny, roll=roll_n, pitch=pitch_n, yaw=yaw_n)
 
+
+def pose_from_intent(intent: HandIntent) -> BodyPose:
     shift = POSE_LIMITS["shift"]
     return BodyPose(
-        x=-nx * shift,
-        y=ny * shift,
-        roll=roll_n * POSE_LIMITS["roll"],
-        pitch=pitch_n * POSE_LIMITS["pitch"],
-        yaw=-yaw_n * POSE_LIMITS["yaw"],
+        x=-intent.nx * shift,
+        y=intent.ny * shift,
+        roll=intent.roll * POSE_LIMITS["roll"],
+        pitch=intent.pitch * POSE_LIMITS["pitch"],
+        yaw=-intent.yaw * POSE_LIMITS["yaw"],
     )
 
 
-def pincers_from_hand(points: Sequence[POINT]) -> Dict[str, Tuple[float, float, float]]:
-    """Left-of-frame tip → L1, right-of-frame tip → R1. Lift when the tip is above the palm."""
+def pose_from_hand(points: Sequence[POINT], world: Optional[Sequence[POINT]] = None) -> BodyPose:
+    return pose_from_intent(hand_intent(points, world))
 
-    cx, cy = _palm_xy(points)
-    span = max(PINCER_SPAN_MIN, math.hypot(
-        points[INDEX_MCP][0] - points[PINKY_MCP][0],
-        points[INDEX_MCP][1] - points[PINKY_MCP][1],
-    ))
-    index, middle = points[INDEX_TIP], points[MIDDLE_TIP]
-    left, right = (index, middle) if index[0] <= middle[0] else (middle, index)
 
-    def offset(tip: POINT) -> Tuple[float, float, float]:
-        nx = _unit((tip[0] - cx) / span * PINCER_GAIN)
-        ny = _unit((cy - tip[1]) / span * PINCER_GAIN)
-        return (nx * PINCER_SIDE_MM, ny * PINCER_FWD_MM, max(0.0, ny) * PINCER_LIFT_MM)
+def pincers_from_hand(
+    points: Sequence[POINT], world: Optional[Sequence[POINT]] = None,
+) -> Dict[str, Tuple[float, float, float]]:
+    """Index → L1, middle → R1. Each finger drives that whole front leg.
 
-    return {"L1": offset(left), "R1": offset(right)}
+    Offsets are in the palm frame so moving or twisting the whole hand
+    does not drive the legs. Side is abduction on the plane, lift is along
+    the fingers, reach is stretch plus poke off the plane.
+    """
+
+    frame = world if world is not None and len(world) >= LANDMARKS else points
+    origin = _palm_origin(frame)
+    ex, ey, ez = _palm_axes(frame)
+    span = max(PINCER_SPAN_MIN, _seg(frame[INDEX_MCP], frame[PINKY_MCP]))
+    z_span = WORLD_Z_SPAN if frame is world else span
+    z_gain = 1.0 if frame is world else PINCER_Z_GAIN
+
+    def offset(joints: Tuple[int, int, int]) -> Tuple[float, float, float]:
+        mcp, pip, tip_i = joints
+        tip_l = _in_palm(frame[tip_i], origin, ex, ey, ez)
+        mcp_l = _in_palm(frame[mcp], origin, ex, ey, ez)
+        length = _seg(frame[mcp], frame[tip_i]) or 1e-4
+        nx = _unit((tip_l[0] - mcp_l[0]) / length * SIDE_GAIN)
+        lift = max(0.0, _unit((tip_l[1] - mcp_l[1]) / span * PINCER_GAIN))
+        stretch_n = _unit((finger_stretch(frame, mcp, pip, tip_i) - STRETCH_MID) / STRETCH_SPAN)
+        depth_n = _unit(-tip_l[2] / z_span * z_gain)
+        fwd = _unit(REACH_STRETCH * stretch_n + REACH_DEPTH * depth_n)
+        return (nx * PINCER_SIDE_MM, fwd * PINCER_FWD_MM, lift * PINCER_LIFT_MM)
+
+    return {"L1": offset(FINGER_INDEX), "R1": offset(FINGER_MIDDLE)}
 
 
 def _palm_normal(points: Sequence[POINT]) -> POINT:
@@ -336,7 +438,7 @@ class HandFollower:
             points=pts,
             connections=list(HAND_BONES),
             puppet=puppet,
-            pincers=pincers_from_hand(pts) if puppet == Puppet.Pincer else None,
+            pincers=pincers_from_hand(pts, wts) if puppet == Puppet.Pincer else None,
         ))
 
     def see_jpeg(self, data: bytes) -> dict:
@@ -394,13 +496,12 @@ class HandFollower:
         self.controller.set_pincers(None)
 
     def _apply(self) -> None:
+        pose = self._pose
+        self.controller.set_pose(x=pose.x, y=pose.y, roll=pose.roll, pitch=pose.pitch, yaw=pose.yaw)
         if self._puppet == Puppet.Pincer:
-            self.controller.set_pose(x=0, y=0, roll=0, pitch=0, yaw=0)
             self.controller.set_pincers(self._pincers)
             return
         self.controller.set_pincers(None)
-        pose = self._pose
-        self.controller.set_pose(x=pose.x, y=pose.y, roll=pose.roll, pitch=pose.pitch, yaw=pose.yaw)
 
     def _paint(self, view: Optional[HandView]) -> None:
         mark = getattr(self.camera, "set_mark", None)
@@ -433,5 +534,9 @@ class HandFollower:
         for name in PINCER_LEGS:
             cur = self._pincers.get(name, (0.0, 0.0, 0.0))
             tgt = target.get(name, (0.0, 0.0, 0.0))
-            out[name] = (_mix(cur[0], tgt[0]), _mix(cur[1], tgt[1]), _mix(cur[2], tgt[2]))
+            out[name] = (
+                _mix(cur[0], tgt[0], PINCER_SMOOTH),
+                _mix(cur[1], tgt[1], PINCER_SMOOTH),
+                _mix(cur[2], tgt[2], PINCER_SMOOTH),
+            )
         self._pincers = out

@@ -476,7 +476,7 @@ an allocation error, lower `still` or add `cma=320M` to the kernel command line.
 | GET | `/status` | Panel page |
 | GET | `/api/state` | The state snapshot, once. Includes `angles` per leg and the 18 `pulses` last sent |
 | GET | `/api/config` | Static: leg names, coxa positions, servo channels and directions, pulse clamp |
-| WS | `/telemetry` | The state snapshot, pushed at 10 Hz, nothing accepted |
+| WS | `/telemetry` | The state snapshot, pushed at 30 Hz, nothing accepted |
 | WS | `/ws` | Commands in, state out. What the client page uses |
 | GET | `/stream` | MJPEG live view |
 | POST | `/capture` | Full-resolution still. Returns `{path, bytes}` |

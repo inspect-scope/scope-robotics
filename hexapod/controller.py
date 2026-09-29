@@ -31,7 +31,7 @@ POSE_LIMITS = {"shift": 15.0, "roll": 8.0, "pitch": 8.0, "yaw": 8.0}
 HEIGHT_RATE = 60.0  # mm/s of ride-height change
 COMMAND_TTL = 0.5  # a source's command is ignored once it is this old
 PINCER_LEGS = ("L1", "R1")
-PINCER_SIDE_MM = 36.0
+PINCER_SIDE_MM = 64.0
 PINCER_FWD_MM = 40.0
 PINCER_LIFT_MM = 55.0
 

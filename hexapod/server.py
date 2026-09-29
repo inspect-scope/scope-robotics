@@ -37,7 +37,7 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 WEB_SOURCE = "web"
 REST_SOURCE = "rest"
 WEB_PRIORITY = 10
-STATE_HZ = 10.0
+STATE_HZ = 30.0
 STREAM_BOUNDARY = b"frame"
 
 # `/move` directions as normalised (vx, vy, yaw) axes in the body frame.
