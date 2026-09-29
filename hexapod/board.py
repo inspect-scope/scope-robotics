@@ -24,6 +24,14 @@ log = logging.getLogger(__name__)
 
 NEUTRAL_PULSE = 1500
 STALE_TELEMETRY_S = 2.0  # torque on and no fresh current/voltage reading for this long: estop, we are blind
+STILL_PULSE_US = 4  # count-level jitter does not reset the settled-pose timer
+
+
+class LoadKind:
+    """What the legs are doing, so the settled-current cut can be tight on the stand."""
+
+    Sit = "sit"
+    Stand = "stand"
 _TELEMETRY_START = protocol.TOUCH_BASE          # 18
 _TELEMETRY_COUNT = protocol.CH_VOLTAGE - protocol.TOUCH_BASE + 1  # touch x6 + current + voltage
 CONTACT_EPS_MM = 1.0  # commanded tip this close to the ground plane counts as switch closed
@@ -46,6 +54,10 @@ class Telemetry:
 
 class BoardError(RuntimeError):
     pass
+
+
+def _pulses_moved(before: Sequence[int], after: Sequence[int]) -> bool:
+    return any(abs(a - b) > STILL_PULSE_US for a, b in zip(before, after))
 
 
 def _held_mean(seen: Deque[Tuple[float, float]], now: float, span: float) -> Optional[float]:
@@ -87,6 +99,9 @@ class Servo2040:
         self._torque_on_since: Optional[float] = None
         self._volt_warned_at = -1e9
         self._safety_trip: Optional[str] = None
+        self._load = LoadKind.Sit
+        self._still_frame: Optional[List[int]] = None
+        self._still_since: Optional[float] = None
 
     # --- lifecycle ----------------------------------------------------------------
 
@@ -159,6 +174,14 @@ class Servo2040:
             self._frame = [int(p) for p in pulses]
             self._frame_at = time.monotonic()
 
+    def set_load(self, load: str) -> None:
+        """Sit vs stand. Jog and neutral leave this at Sit (legs free)."""
+
+        if load not in (LoadKind.Sit, LoadKind.Stand):
+            raise ValueError(f"unknown load {load!r}")
+        with self._lock:
+            self._load = load
+
     def set_torque(self, enabled: bool) -> None:
         if enabled and not self.connected:
             raise BoardError("board offline; torque not enabled")
@@ -215,16 +238,20 @@ class Servo2040:
         """Latch the estop on sustained overcurrent, undervoltage or lost telemetry
         while torque is on. Judges the mean over each window, so a reading that
         swings around the cut still trips. The current is the TOTAL for all 18
-        servos: one stalled servo adds about 4 A and does not reach
-        safety.current_cut_a on its own."""
+        servos. current_cut_a is the hard ceiling. After pulses hold still,
+        sit_cut_a / stand_cut_a catch a single stall that the hard ceiling misses."""
         s = self.config.safety
         with self._lock:
             t = self._telemetry
             on = bool(self._torque_actual)
+            frame = list(self._frame)
+            load = self._load
         if not on:
             self._amps_seen.clear()
             self._volts_seen.clear()
             self._torque_on_since = None
+            self._still_frame = None
+            self._still_since = None
             return
         if self._torque_on_since is None:
             self._torque_on_since = now
@@ -246,6 +273,18 @@ class Servo2040:
             self._safety_estop(f"overcurrent: {amps:.1f} A mean over {s.current_cut_s:.1f} s, "
                                f"cut is {s.current_cut_a:.0f} A")
             return
+        if self._still_frame is None or _pulses_moved(self._still_frame, frame):
+            self._still_frame = frame
+            self._still_since = now
+        elif self._still_since is not None and now - self._still_since >= s.still_s:
+            cut = s.sit_cut_a if load == LoadKind.Sit else s.stand_cut_a
+            held = _held_mean(self._amps_seen, now, s.still_s)
+            if held is not None and held > cut:
+                self._safety_estop(
+                    f"settled {load} current: {held:.1f} A mean over {s.still_s:.1f} s, "
+                    f"cut is {cut:.1f} A"
+                )
+                return
         volts = _held_mean(self._volts_seen, now, s.volts_cut_s)
         if volts is not None and volts < s.volts_cut:
             self._safety_estop(f"battery {volts:.2f} V mean over {s.volts_cut_s:.0f} s, "

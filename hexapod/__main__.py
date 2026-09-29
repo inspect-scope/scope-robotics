@@ -10,7 +10,7 @@ import time
 from typing import List, Optional
 
 from . import config as config_mod
-from .board import BoardError, FakeBoard, Servo2040
+from .board import BoardError, FakeBoard, LoadKind, Servo2040
 from .config import JOINTS, Config
 from .controller import POSE_LIMITS, Controller
 from .gait import TripodGait, Velocity
@@ -128,6 +128,7 @@ def cmd_neutral(args: argparse.Namespace) -> int:
 
     board = _board(config, args)
     with board:
+        board.set_load(LoadKind.Stand if height > config.stance.sit_height + 1.0 else LoadKind.Sit)
         board.set_frame(frame)
         board.set_torque(True)
         print("torque on, Ctrl-C to release")
@@ -280,15 +281,32 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if config.camera.enabled and not args.no_camera:
         camera = (FakeCamera if args.dry_run else Camera)(config.camera)
     state = RobotState(config, controller, imu=imu, camera=camera)
+    if args.hand:
+        from .hand import HandFollower
+        from .webcam import WebcamCamera
+
+        usb = WebcamCamera(config.camera, index=args.webcam_index) if args.webcam else None
+        state.hand = HandFollower(controller, camera=usb)
     state.start()
     app = create_app(state, config)
 
     print(f"\n  {'dry run, no serial port' if args.dry_run else 'board on ' + config.port}")
     imu_note = "off" if imu is None else "fake" if args.dry_run else f"i2c-{config.imu.bus} {config.imu.address:#04x}"
-    camera_note = "off" if camera is None else "fake" if args.dry_run else (
-        f"{config.camera.lores[0]}x{config.camera.lores[1]} live, "
-        f"{config.camera.still[0]}x{config.camera.still[1]} stills")
-    print(f"  imu {imu_note}; camera {camera_note}")
+    if camera is None:
+        camera_note = "off"
+    elif args.dry_run:
+        camera_note = "fake"
+    else:
+        camera_note = (
+            f"{config.camera.lores[0]}x{config.camera.lores[1]} live, "
+            f"{config.camera.still[0]}x{config.camera.still[1]} stills")
+    if state.hand is None:
+        hand_note = "off"
+    elif args.webcam:
+        hand_note = f"on, usb {args.webcam_index}"
+    else:
+        hand_note = "on, browser camera"
+    print(f"  imu {imu_note}; camera {camera_note}; hand {hand_note}")
     _print_urls(args.port)
     try:
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", ws_ping_interval=5)
@@ -341,6 +359,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--no-camera", action="store_true", help="do not open the camera")
     serve.add_argument("--no-imu", action="store_true", help="do not open the IMU")
+    serve.add_argument("--webcam", action="store_true", help="also open a USB webcam for /hand/stream")
+    serve.add_argument("--webcam-index", type=int, default=0, help="OpenCV camera index (default 0)")
+    serve.add_argument("--hand", action="store_true", help="preview: hand-follow modal (MediaPipe Hands)")
     serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)

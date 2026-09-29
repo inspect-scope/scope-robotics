@@ -15,9 +15,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -27,6 +27,7 @@ from .camera import Camera, CameraError
 from .config import Config
 from .controller import COMMAND_TTL, POSE_LIMITS, Controller
 from .gait import TrickKind, WALK_KINDS, walk_catalog, trick_catalog, Velocity
+from .hand import Follow
 from .mode import MODE_KINDS, mode_catalog
 from .state import RobotState
 
@@ -36,7 +37,7 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 WEB_SOURCE = "web"
 REST_SOURCE = "rest"
 WEB_PRIORITY = 10
-STATE_HZ = 10.0
+STATE_HZ = 30.0
 STREAM_BOUNDARY = b"frame"
 
 # `/move` directions as normalised (vx, vy, yaw) axes in the body frame.
@@ -52,6 +53,11 @@ DIRECTIONS: Dict[str, tuple] = {
 }
 
 
+class HandLandmarks(BaseModel):
+    points: List[List[float]]
+    world: Optional[List[List[float]]] = None
+
+
 class MoveRequest(BaseModel):
     """Either a named direction with a speed, or raw -1..1 axes."""
 
@@ -60,6 +66,15 @@ class MoveRequest(BaseModel):
     vx: Optional[float] = None
     vy: Optional[float] = None
     yaw: Optional[float] = None
+
+
+HAND_DISABLED = "hand follow is not enabled"
+
+
+def _hand(state: RobotState):
+    if state.hand is None:
+        raise HTTPException(404, HAND_DISABLED)
+    return state.hand
 
 
 def _clamp_axis(value: Any) -> float:
@@ -145,6 +160,7 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                 },
                 "camera": {"enabled": state.camera is not None, "lores": list(config.camera.lores),
                            "still": list(config.camera.still)},
+                "hand": state.hand is not None,
             }
         )
 
@@ -195,6 +211,30 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
             headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
         )
 
+    @app.get("/hand/stream")
+    async def hand_stream() -> StreamingResponse:
+        camera = getattr(_hand(state), "camera", None)
+        if camera is None or not camera.ok:
+            raise HTTPException(503, "hand camera not available")
+        return StreamingResponse(
+            _mjpeg(camera),
+            media_type=f"multipart/x-mixed-replace; boundary={STREAM_BOUNDARY.decode()}",
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+        )
+
+    @app.post("/api/hand-frame")
+    async def hand_frame(request: Request) -> JSONResponse:
+        data = await request.body()
+        if not data:
+            raise HTTPException(400, "empty frame")
+        loop = asyncio.get_running_loop()
+        view = await loop.run_in_executor(None, _hand(state).see_jpeg, data)
+        return JSONResponse(view)
+
+    @app.post("/api/hand-landmarks")
+    async def hand_landmarks(body: HandLandmarks) -> JSONResponse:
+        return JSONResponse(_hand(state).see_landmarks(body.points, body.world))
+
     @app.post("/capture")
     async def capture() -> JSONResponse:
         camera = _camera()
@@ -220,7 +260,7 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
         try:
             while True:
                 message = await socket.receive_json()
-                _handle(controller, config, message)
+                _handle(controller, config, message, hand=state.hand)
         except WebSocketDisconnect:
             log.info("client disconnected: %s", peer)
         except Exception:
@@ -276,7 +316,7 @@ async def _mjpeg(camera: Camera):
                + str(len(frame)).encode() + b"\r\n\r\n" + frame + b"\r\n")
 
 
-def _handle(controller: Controller, config: Config, message: Dict[str, Any]) -> None:
+def _handle(controller: Controller, config: Config, message: Dict[str, Any], hand=None) -> None:
     kind = message.get("type")
     if kind == "drive":
         controller.command(
@@ -339,6 +379,20 @@ def _handle(controller: Controller, config: Config, message: Dict[str, Any]) -> 
                 controller.start_trick(str(name))
             except ValueError:
                 log.warning("bad trick %r", name)
+    elif kind == "hand":
+        if hand is None:
+            log.warning("hand follow is not available")
+        else:
+            if "on" in message:
+                try:
+                    hand.set_follow(Follow.On if message.get("on") else Follow.Off)
+                except ValueError:
+                    log.warning("bad hand follow %r", message.get("on"))
+            if "puppet" in message:
+                try:
+                    hand.set_puppet(str(message["puppet"]))
+                except ValueError:
+                    log.warning("bad hand puppet %r", message.get("puppet"))
     elif kind == "ping":
         pass
     else:

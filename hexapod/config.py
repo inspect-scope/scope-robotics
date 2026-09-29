@@ -116,12 +116,17 @@ class CameraConfig:
 class SafetyConfig:
     """Trips the board's IO thread applies while torque is on, judged on the mean
     over each window. The current is the total for all 18 servos: one stalled
-    FT5330M adds about 4 A and two read about 8 A on the stand, so a 10 A cut
-    needs three simultaneous stalls, or two with other load on top. Chica's host
-    app cut at 10 A after 2 s (WARN_CUR) and 6.0 V (WARN_VOL)."""
+    FT5330M adds about 4 A. current_cut_a is the hard ceiling. sit_cut_a and
+    stand_cut_a apply only after pulses have been still for still_s, so a single
+    stall at a held pose trips. Walking (pulses moving) only uses current_cut_a.
+    sit_cut_a matches poke.py --centre. stand_cut_a sits between estimated
+    standing load (about 3 to 4 A) and standing plus one stall (about 7 A)."""
 
     current_cut_a: float = 10.0
     current_cut_s: float = 1.0
+    still_s: float = 1.0
+    sit_cut_a: float = 1.5
+    stand_cut_a: float = 5.5
     volts_warn: float = 6.4
     volts_cut: float = 6.0
     volts_cut_s: float = 2.0
@@ -205,14 +210,20 @@ def _safety(raw: Dict[str, Any]) -> SafetyConfig:
     cfg = SafetyConfig(
         current_cut_a=float(raw.get("current_cut_a", d.current_cut_a)),
         current_cut_s=float(raw.get("current_cut_s", d.current_cut_s)),
+        still_s=float(raw.get("still_s", d.still_s)),
+        sit_cut_a=float(raw.get("sit_cut_a", d.sit_cut_a)),
+        stand_cut_a=float(raw.get("stand_cut_a", d.stand_cut_a)),
         volts_warn=float(raw.get("volts_warn", d.volts_warn)),
         volts_cut=float(raw.get("volts_cut", d.volts_cut)),
         volts_cut_s=float(raw.get("volts_cut_s", d.volts_cut_s)),
     )
-    if min(cfg.current_cut_a, cfg.current_cut_s, cfg.volts_cut, cfg.volts_cut_s) <= 0:
+    if min(cfg.current_cut_a, cfg.current_cut_s, cfg.still_s, cfg.sit_cut_a,
+           cfg.stand_cut_a, cfg.volts_cut, cfg.volts_cut_s) <= 0:
         raise ValueError("safety cuts and windows must be positive; remove the block to use the defaults")
     if cfg.volts_warn < cfg.volts_cut:
         raise ValueError("safety.volts_warn must not be below safety.volts_cut")
+    if not cfg.sit_cut_a <= cfg.stand_cut_a <= cfg.current_cut_a:
+        raise ValueError("safety sit/stand/current cuts must be nondecreasing")
     return cfg
 
 

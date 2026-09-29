@@ -63,6 +63,27 @@ select {
 #jump.armed { background: var(--warning); border-color: var(--warning); color: #111; }
 #bounce .loop { font-size: 12px; margin-left: 2px; opacity: .65; }
 #bounce.on .loop { opacity: 1; }
+#hand.live { box-shadow: inset 0 0 0 1px var(--good); }
+#hand-box {
+  width: min(560px, calc(100vw - 24px)); padding: 0; margin: 0;
+  border: 1px solid var(--grid); border-radius: var(--radius);
+  background: var(--surface); color: var(--ink);
+  position: fixed; inset: auto; z-index: 20;
+}
+#hand-box[open] { display: block; }
+.hand-hd {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-bottom: 1px solid var(--grid);
+  cursor: grab;
+}
+.hand-hd:active { cursor: grabbing; }
+.hand-hd strong { font-weight: 600; }
+.hand-hd .src { font-size: 12px; color: var(--muted); margin-right: auto; }
+.hand-stage { position: relative; background: #111; aspect-ratio: 4 / 3; }
+.hand-stage video, .hand-stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hand-stage video { opacity: 0; }
+.hand-stage canvas { pointer-events: none; }
+#hand-readout { margin: 0; padding: 8px 12px 12px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
 
 /* --- stat tiles --- */
 .stats {
@@ -82,7 +103,10 @@ select {
 .icon { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 
 /* --- feet --- */
-.feet { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--grid); background: var(--surface); }
+.feet { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--grid); background: var(--surface); }
+.feet-dots { display: flex; gap: 8px; flex-wrap: wrap; }
+.feet-note { margin-left: auto; font-size: 12px; color: var(--warning); white-space: nowrap; min-height: 1.2em; }
+.feet-note:empty { visibility: hidden; }
 .foot { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
 .foot .dot { width: 8px; height: 8px; }
 .foot.down { color: var(--ink-2); } .foot.down .dot { background: var(--good); }
@@ -221,7 +245,10 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   </div>
 </section>
 
-<section class="feet" id="feet"></section>
+<section class="feet">
+  <div class="feet-dots" id="feet"></div>
+  <span class="feet-note" id="feet-note"></span>
+</section>
 
 <main>
   <div class="row">
@@ -230,11 +257,28 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     <button id="jump" title="click twice to jump">Jump</button>
     <button id="bounce" title="loops until off">Bounce <span class="loop" aria-hidden="true">↻</span></button>
     <select id="trick-pick" aria-label="Tricks"></select>
+    <button id="hand" title="open hand follow preview" hidden>Hand</button>
     <select id="gait-pick" aria-label="Gait"></select>
     <select id="mode-pick" aria-label="Mode"></select>
     <button id="torque">Torque</button>
     <button id="clear" style="margin-left:auto">Clear e-stop</button>
   </div>
+
+  <dialog id="hand-box">
+  <div class="hand-hd">
+    <strong id="hand-grab">hand follow</strong>
+    <span class="src" id="hand-src">MediaPipe Hands</span>
+    <button id="hand-lean">Lean</button>
+    <button id="hand-pincer">Pincer</button>
+    <button id="hand-go">Follow</button>
+    <button id="hand-x">close</button>
+  </div>
+  <div class="hand-stage">
+    <video id="hand-cam" playsinline muted></video>
+    <canvas id="hand-over"></canvas>
+  </div>
+  <p id="hand-readout">hold a hand in front of the laptop camera</p>
+  </dialog>
 
   <div class="visuals">
     <div class="view" id="view">
@@ -287,6 +331,11 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   </details>
 </main>
 
+<script type="module">
+import { FilesetResolver, HandLandmarker } from "/static/vendor/mediapipe/vision_bundle.mjs";
+window.mpHands = { FilesetResolver, HandLandmarker };
+window.dispatchEvent(new Event("mp-ready"));
+</script>
 <script>
 const $ = (id) => document.getElementById(id);
 const clamp = (v, lo, hi) => v < lo ? lo : v > hi ? hi : v;
@@ -435,7 +484,281 @@ function armJump() {
 }
 $("jump").onclick = armJump;
 $("bounce").onclick = () => send({ type: "bounce", on: !$("bounce").classList.contains("on") });
+$("hand").onclick = openHand;
+$("hand-go").onclick = () => send({ type: "hand", on: !$("hand-go").classList.contains("on") });
+$("hand-lean").onclick = () => { lastHandMode = "lean"; send({ type: "hand", puppet: "lean" }); };
+$("hand-pincer").onclick = () => { lastHandMode = "pincer"; send({ type: "hand", puppet: "pincer" }); };
+$("hand-x").onclick = () => $("hand-box").close();
+$("hand-box").addEventListener("close", stopHand);
+bindHandDrag($("hand-box"));
+window.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && $("hand-box").open) $("hand-box").close();
+});
 $("torque").onclick = () => send({ type: "torque", on: !$("torque").classList.contains("on") });
+
+/* ---------------- hand modal ---------------- */
+let handStream = null;
+let handBusy = false;
+let handPending = null;
+let handOpen = false;
+let handMp = null;
+let lastHandPose = {};
+let lastHandMode = "lean";
+let poseLim = { shift: 15, roll: 8, pitch: 8, yaw: 8 };
+const HAND_BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[0,17],[17,18],[18,19],[19,20]];
+const HAND_PALM = [0, 5, 9, 13, 17];
+const HAND_VIDEO_FADE = 0.5;
+const HAND_PAD = 8;
+const PINCER_TIPS = [8, 12];
+const PINCER_BONES = new Set(["5,6","6,7","7,8","9,10","10,11","11,12"]);
+
+function whenMp() {
+  if (window.mpHands) return Promise.resolve(window.mpHands);
+  return new Promise((resolve) => window.addEventListener("mp-ready", () => resolve(window.mpHands), { once: true }));
+}
+
+function placeHandBox(box) {
+  if (box.style.left) return;
+  const w = box.offsetWidth, h = box.offsetHeight;
+  box.style.left = Math.round(Math.max(HAND_PAD, (innerWidth - w) / 2)) + "px";
+  box.style.top = Math.round(Math.max(HAND_PAD, (innerHeight - h) / 2)) + "px";
+}
+
+function clampHandBox(box) {
+  if (!box.open || !box.style.left) return;
+  const w = box.offsetWidth, h = box.offsetHeight;
+  box.style.left = clamp(parseFloat(box.style.left), HAND_PAD, Math.max(HAND_PAD, innerWidth - w - HAND_PAD)) + "px";
+  box.style.top = clamp(parseFloat(box.style.top), HAND_PAD, Math.max(HAND_PAD, innerHeight - h - HAND_PAD)) + "px";
+}
+
+function bindHandDrag(box) {
+  const hd = box.querySelector(".hand-hd");
+  let grab = null;
+  hd.addEventListener("pointerdown", (ev) => {
+    if (ev.target.closest("button")) return;
+    const r = box.getBoundingClientRect();
+    grab = { dx: ev.clientX - r.left, dy: ev.clientY - r.top };
+    hd.setPointerCapture(ev.pointerId);
+  });
+  hd.addEventListener("pointermove", (ev) => {
+    if (!grab) return;
+    box.style.left = clamp(ev.clientX - grab.dx, HAND_PAD, Math.max(HAND_PAD, innerWidth - box.offsetWidth - HAND_PAD)) + "px";
+    box.style.top = clamp(ev.clientY - grab.dy, HAND_PAD, Math.max(HAND_PAD, innerHeight - box.offsetHeight - HAND_PAD)) + "px";
+  });
+  const end = () => { grab = null; };
+  hd.addEventListener("pointerup", end);
+  hd.addEventListener("pointercancel", end);
+  window.addEventListener("resize", () => clampHandBox(box));
+}
+
+async function openHand() {
+  const box = $("hand-box");
+  box.show();
+  placeHandBox(box);
+  if (handStream) return;
+  handOpen = true;
+  try {
+    handStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: 640, height: 480 }, audio: false,
+    });
+  } catch (err) {
+    $("hand-readout").textContent = "camera denied: " + err.message;
+    return;
+  }
+  const video = $("hand-cam");
+  video.srcObject = handStream;
+  await video.play();
+  try {
+    const mp = await whenMp();
+    const fileset = await mp.FilesetResolver.forVisionTasks("/static/vendor/mediapipe/wasm");
+    handMp = await mp.HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: "/static/vendor/mediapipe/hand_landmarker.task" },
+      runningMode: "VIDEO",
+      numHands: 1,
+    });
+    $("hand-src").textContent = "MediaPipe Hands 3d";
+  } catch (err) {
+    handMp = null;
+    $("hand-src").textContent = "skin blob fallback";
+    $("hand-readout").textContent = "mediapipe wasm failed: " + err.message;
+  }
+  pumpHand();
+}
+
+function stopHand() {
+  handOpen = false;
+  send({ type: "hand", on: false });
+  if (handStream) {
+    handStream.getTracks().forEach((t) => t.stop());
+    handStream = null;
+  }
+  $("hand-cam").srcObject = null;
+}
+
+function postHand(body) {
+  if (handBusy) {
+    handPending = body;
+    return;
+  }
+  handBusy = true;
+  fetch("/api/hand-landmarks", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((res) => res.ok ? res.json() : null).then((view) => {
+    if (view && view.pose) lastHandPose = view.pose;
+    if (view && view.mode) lastHandMode = view.mode;
+  }).catch((err) => { $("hand-readout").textContent = "hand: " + err.message; })
+    .finally(() => {
+      handBusy = false;
+      if (!handPending) return;
+      const next = handPending;
+      handPending = null;
+      postHand(next);
+    });
+}
+
+function pumpHand() {
+  if (!handOpen || !handStream) return;
+  const video = $("hand-cam");
+  const canvas = $("hand-over");
+  if (video.readyState >= 2) {
+    const w = video.videoWidth || 640;
+    const h = video.videoHeight || 480;
+    if (canvas.width !== w) { canvas.width = w; canvas.height = h; }
+    const ctx = canvas.getContext("2d");
+    drawHandFrame(ctx, video, w, h);
+    if (handMp) {
+      const result = handMp.detectForVideo(canvas, performance.now());
+      const marks = result.landmarks && result.landmarks[0];
+      const points = marks ? marks.map((p) => [p.x, p.y, p.z]) : [];
+      const world = marks && result.worldLandmarks && result.worldLandmarks[0]
+        ? result.worldLandmarks[0].map((p) => [p.x, p.y, p.z]) : [];
+      postHand({ points, world: world.length ? world : null });
+      fadeFrame(ctx, w, h);
+      paintHand(ctx, w, h, {
+        tracking: points.length >= 21,
+        source: "mediapipe",
+        points,
+        connections: points.length ? HAND_BONES : [],
+        pose: lastHandPose,
+        mode: lastHandMode,
+      });
+    } else if (!handBusy) {
+      handBusy = true;
+      canvas.toBlob(async (blob) => {
+        try {
+          const res = await fetch("/api/hand-frame", { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } });
+          if (res.ok) paintHand(canvas.getContext("2d"), w, h, await res.json());
+        } catch (err) {
+          $("hand-readout").textContent = "hand: " + err.message;
+        } finally {
+          handBusy = false;
+        }
+      }, "image/jpeg", 0.7);
+      fadeFrame(ctx, w, h);
+    }
+  }
+  requestAnimationFrame(pumpHand);
+}
+
+function drawHandFrame(ctx, video, w, h) {
+  ctx.save();
+  ctx.translate(w, 0);
+  ctx.scale(-1, 1);
+  ctx.drawImage(video, 0, 0, w, h);
+  ctx.restore();
+}
+
+function fadeFrame(ctx, w, h) {
+  ctx.fillStyle = `rgba(0,0,0,${HAND_VIDEO_FADE})`;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function paintHand(ctx, w, h, view) {
+  const raw = view.points || [];
+  const pose = view.pose || lastHandPose || {};
+  const src = view.source || "lost";
+  $("hand-src").textContent = src === "mediapipe" ? "MediaPipe Hands 3d" : src === "blob" ? "skin blob fallback" : "looking…";
+  if (!raw.length) {
+    $("hand-readout").textContent = "no hand in frame";
+    return;
+  }
+  const pts = raw.map((p) => ({ x: p[0] * w, y: p[1] * h, z: (p[2] || 0) * w }));
+
+  paintPalmPlane(ctx, pts);
+
+  const bones = (view.connections || HAND_BONES)
+    .map(([a, b]) => ({ a: pts[a], b: pts[b], id: a + "," + b, d: ((pts[a] && pts[a].z) + (pts[b] && pts[b].z)) / 2 }))
+    .filter((b) => b.a && b.b)
+    .sort((u, v) => v.d - u.d);
+  const mode = view.mode || lastHandMode;
+  const pincer = mode === "pincer";
+  for (const bone of bones) {
+    const grab = pincer && PINCER_BONES.has(bone.id);
+    ctx.strokeStyle = grab ? "rgba(57,135,229,0.85)" : "rgba(12,163,12,0.7)";
+    ctx.lineWidth = grab ? 1.8 : 1.3;
+    ctx.beginPath();
+    ctx.moveTo(bone.a.x, bone.a.y);
+    ctx.lineTo(bone.b.x, bone.b.y);
+    ctx.stroke();
+  }
+  pts.forEach((p, i) => {
+    ctx.fillStyle = pincer && PINCER_TIPS.includes(i) ? "#3987e5" : "rgba(12,163,12,0.8)";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, i === 0 ? 3 : 1.8, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  if (pincer && pts[8] && pts[12]) {
+    ctx.fillStyle = "#3987e5";
+    ctx.font = "12px ui-sans-serif, sans-serif";
+    ctx.fillText("L1", pts[8].x + 8, pts[8].y - 8);
+    ctx.fillText("R1", pts[12].x + 8, pts[12].y - 8);
+  }
+  if (!pincer) paintShiftArrow(ctx, pts, pose);
+  const L = (view.pincers && view.pincers.L1) || [0, 0, 0];
+  const R = (view.pincers && view.pincers.R1) || [0, 0, 0];
+  $("hand-readout").textContent = !view.tracking ? "no hand in frame"
+    : pincer ? `pincer  L1 ${fmt(L[0], 0)} ${fmt(L[1], 0)} ${fmt(L[2], 0)}  R1 ${fmt(R[0], 0)} ${fmt(R[1], 0)} ${fmt(R[2], 0)}`
+    : `chassis lean  x ${fmt(pose.x, 1)}  y ${fmt(pose.y, 1)}  roll ${fmt(pose.roll, 1)}  pitch ${fmt(pose.pitch, 1)}  yaw ${fmt(pose.yaw, 1)}`;
+}
+
+function paintPalmPlane(ctx, pts) {
+  const w = pts[0], i = pts[5], p = pts[17];
+  if (!w || !i || !p) return;
+  const q = { x: i.x + p.x - w.x, y: i.y + p.y - w.y };
+  ctx.beginPath();
+  ctx.moveTo(w.x, w.y);
+  ctx.lineTo(i.x, i.y);
+  ctx.lineTo(q.x, q.y);
+  ctx.lineTo(p.x, p.y);
+  ctx.closePath();
+  ctx.fillStyle = "rgba(57,135,229,0.1)";
+  ctx.strokeStyle = "rgba(57,135,229,0.7)";
+  ctx.lineWidth = 1.2;
+  ctx.fill();
+  ctx.stroke();
+}
+
+function paintShiftArrow(ctx, pts, pose) {
+  const palm = HAND_PALM.map((i) => pts[i]).filter(Boolean);
+  if (palm.length < 3) return;
+  const c = {
+    x: palm.reduce((s, p) => s + p.x, 0) / palm.length,
+    y: palm.reduce((s, p) => s + p.y, 0) / palm.length,
+  };
+  const span = Math.hypot(pts[5].x - pts[17].x, pts[5].y - pts[17].y);
+  const scale = Math.max(28, span * 0.7);
+  const sx = ((pose.x || 0) / poseLim.shift) * scale * 0.9;
+  const sy = -((pose.y || 0) / poseLim.shift) * scale * 0.9;
+  if (Math.hypot(sx, sy) <= 4) return;
+  ctx.strokeStyle = "#fab219";
+  ctx.lineWidth = 2.4;
+  ctx.beginPath();
+  ctx.moveTo(c.x, c.y);
+  ctx.lineTo(c.x + sx, c.y + sy);
+  ctx.stroke();
+}
 
 /* ---------------- camera ---------------- */
 // The <img> holds one long-lived HTTP connection to /stream. Set src once when the
@@ -594,16 +917,18 @@ function setSlider(key, value) {
 async function loadConfig() {
   const cfg = await (await fetch("/api/config")).json();
   const lim = cfg.pose_limits;
+  if (lim) poseLim = { shift: lim.shift, roll: lim.roll, pitch: lim.pitch, yaw: lim.yaw };
   retune("height", cfg.height.min, cfg.height.max);
   ["roll", "pitch", "yaw"].forEach((k) => retune(k, -lim[k], lim[k]));
   ["x", "y"].forEach((k) => retune(k, -lim.shift, lim.shift));
-  setSlider("height", cfg.height.default);
+  setSlider("height", cfg.height.min);
   setSlider("cycle_s", cfg.gait.cycle_s);
   setSlider("step_lift", cfg.gait.step_lift);
   setSlider("max_speed", cfg.gait.max_speed);
   buildGaits(cfg.gait.catalog || cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
   buildTricks(cfg.gait.catalog_tricks || []);
   buildModes((cfg.mode && cfg.mode.catalog) || ["normal"], (cfg.mode && cfg.mode.current) || "normal");
+  $("hand").hidden = !cfg.hand;
   ["pitch", "roll", "yaw", "x", "y"].forEach((k) => setSlider(k, 0));
   $("feet").innerHTML = cfg.legs.map((n) =>
     `<span class="foot" id="foot-${n}"><span class="dot"></span>${n}</span>`).join("");
@@ -1094,8 +1419,14 @@ function render(s) {
   setLive(!!(s.camera && s.camera.ok));
   if (s.camera && !s.camera.ok) $("nocam").textContent = s.camera.error ? `camera: ${s.camera.error}` : "no camera";
 
+  $("stand").classList.toggle("on", s.state === "standing" || s.state === "walking" || s.state === "bouncing" || s.state === "jumping" || s.state === "flexing" || s.state === "leaning" || s.state === "dancing");
   $("torque").classList.toggle("on", s.torque);
   $("bounce").classList.toggle("on", s.trick === "bounce");
+  $("hand").classList.toggle("on", !!(s.hand && s.hand.follow === "on"));
+  $("hand").classList.toggle("live", !!(s.hand && s.hand.tracking));
+  $("hand-go").classList.toggle("on", !!(s.hand && s.hand.follow === "on"));
+  $("hand-lean").classList.toggle("on", !!(s.hand && s.hand.mode === "lean"));
+  $("hand-pincer").classList.toggle("on", !!(s.hand && s.hand.mode === "pincer"));
   $("estop").classList.toggle("latched", s.estopped);
   $("clear").disabled = !s.estopped;
   setSlider("height", s.height);
@@ -1106,12 +1437,14 @@ function render(s) {
   }
   document.querySelectorAll(".foot").forEach((el) => el.classList.remove("limited"));
   (s.limited_legs || []).forEach((n) => $("foot-" + n)?.classList.add("limited"));
+  $("feet-note").textContent = (s.limited_legs && s.limited_legs.length)
+    ? `limited ${s.limited_legs.join(", ")}` : "";
 
   const problems = [];
   if (!s.connected) problems.push(s.error ? `board offline: ${s.error}` : "board offline");
-  if (s.limited_legs?.length) problems.push(`pose limited on ${s.limited_legs.join(", ")}`);
   if (s.estopped) problems.push(s.safety_trip ? `safety trip: ${s.safety_trip}. Find the cause before clearing` : "e-stop latched, clear it before standing");
   if (imu.error && !imu.ok && !imu.calibrating) problems.push(`imu: ${imu.error}`);
+  if (s.hand && s.hand.error) problems.push(`hand: ${s.hand.error}`);
   drawStance(s);
   drawActuators(s);
   draw3d(s);

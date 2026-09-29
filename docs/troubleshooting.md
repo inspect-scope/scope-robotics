@@ -756,12 +756,12 @@ happen during it.
 **What the trips catch, and what they miss.** In the repo, not yet on the Pi:
 
 - The board's IO thread estops, torque on, on a total over 10 A (mean over 1 s),
-  under 6.0 V (mean over 2 s), or no telemetry for 2 s. It runs under
-  `hexapod serve`, `jog` and `neutral` alike. **10 A needs three simultaneous
-  stalls on the stand**: one adds about 4 A, two read about 8 A. A single stall
-  holds indefinitely under this cut. The board also refuses torque while it is
-  offline, and does not replay an earlier request when the port comes back.
-  Both web pages show the trip reason.
+  a held sit over 1.5 A, a held stand over 5.5 A, under 6.0 V (mean over 2 s),
+  or no telemetry for 2 s. It runs under `hexapod serve`, `jog` and `neutral`
+  alike. **10 A needs three simultaneous stalls**. A single stall at a still
+  pose now trips on the sit/stand cuts. Walking only has the 10 A ceiling. The
+  board also refuses torque while it is offline, and does not replay an earlier
+  request when the port comes back. Both web pages show the trip reason.
 - `poke.py --centre` cuts at 10 A, and also at 1.5 A mean over 1.5 s once the
   pose has settled. Legs free at a static pose read about 0.2 A, so one stalled
   servo trips it. This is the situation SERVO 8 died in.
@@ -773,15 +773,13 @@ happen during it.
 - Every `poke.py` mode drops the relay after 2 s without a current reading, and
   a second Ctrl-C cannot interrupt the relay-off.
 
-Catching a single stall under `hexapod serve` needs a mode-aware check: once a
-pose has held for a second, the total must fall back under a ceiling for that
-mode (legs free, standing on the floor, walking). Standing on the floor is
-estimated at 2.8 to 3.9 A from the femurs alone, for an unweighed robot of 2.5
-to 3.5 kg, with the knees adding an unknown amount. That overlaps one stall on
-the stand, so one fixed number cannot do both. The ceilings need measurements nobody has made yet:
-calibrate the current sensor against a clamp meter, weigh the robot, log settled
-current per pose on the floor and while walking, and stall one servo on purpose
-for two seconds to confirm the sensor reads about +4 A.
+`hexapod serve` now uses that mode-aware check for a **held** pose: after
+pulses are still for `safety.still_s` (1 s), sit/legs-free trips at
+`sit_cut_a` (1.5 A) and standing still trips at `stand_cut_a` (5.5 A). Walking
+(pulses moving) still only has the 10 A ceiling. Standing current is estimated
+(about 3 to 4 A); if a healthy stand trips, raise `stand_cut_a` after you log
+it. The ceilings still want a clamp-meter calibration, a weighed robot, and a
+deliberate two-second stall to confirm the sensor reads about +4 A.
 
 **Fitting horns.** With the servo powered and holding 1500 us: on the bench
 tester in neutral, or under `poke.py --centre` with only that leg plugged in.

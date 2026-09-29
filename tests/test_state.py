@@ -46,6 +46,7 @@ def test_snapshot_merges_board_imu_camera_and_network(stack, tmp_path):
         assert len(s["imu"]["gyro"]) == 3
         assert s["imu"]["age_s"] >= 0
         assert s["camera"]["ok"] and s["camera"]["captures"] == 0
+        assert s["hand"]["follow"] == "off" and s["hand"]["points"] == []
         assert "ip" in s and isinstance(s["addresses"], list)
         assert s["uptime_s"] >= 0
         assert s["last_error"] is None

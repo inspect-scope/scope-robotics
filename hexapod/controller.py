@@ -17,7 +17,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
-from .board import Servo2040
+from .board import LoadKind, Servo2040
 from .config import JOINTS, Config
 from .gait import Gait, TrickKind, Velocity, MENU_TRICKS, POSE_TRICKS
 from .kinematics import BodyPose, HexapodKinematics, JointAngles
@@ -30,6 +30,10 @@ log = logging.getLogger(__name__)
 POSE_LIMITS = {"shift": 15.0, "roll": 8.0, "pitch": 8.0, "yaw": 8.0}
 HEIGHT_RATE = 60.0  # mm/s of ride-height change
 COMMAND_TTL = 0.5  # a source's command is ignored once it is this old
+PINCER_LEGS = ("L1", "R1")
+PINCER_SIDE_MM = 64.0
+PINCER_FWD_MM = 40.0
+PINCER_LIFT_MM = 55.0
 
 
 @dataclass
@@ -104,6 +108,7 @@ class Controller:
         self._active_source: Optional[str] = None
         self._loop_hz = 0.0
         self._trip_seen: Optional[str] = None  # the board trip this loop has already reacted to
+        self._pincers: Optional[Dict[str, tuple]] = None
 
     # --- lifecycle ----------------------------------------------------------------
 
@@ -142,6 +147,25 @@ class Controller:
                 current[key] = float(value)
             current["z"] = 0.0  # ride height is the height slider's job, not the pose's
             self._pose = BodyPose(**current)
+
+    def set_pincers(self, offsets: Optional[Dict[str, tuple]]) -> None:
+        """L1/R1 foot offsets from the current stance, mm. None clears them."""
+
+        if not offsets:
+            with self._lock:
+                self._pincers = None
+            return
+        clamped: Dict[str, tuple] = {}
+        for name, delta in offsets.items():
+            if name not in PINCER_LEGS:
+                continue
+            clamped[name] = (
+                _clamp(delta[0], PINCER_SIDE_MM),
+                _clamp(delta[1], PINCER_FWD_MM),
+                max(0.0, min(PINCER_LIFT_MM, float(delta[2]))),
+            )
+        with self._lock:
+            self._pincers = clamped or None
 
     def set_height(self, height: float) -> None:
         s = self.config.stance
@@ -199,6 +223,7 @@ class Controller:
         self.board.estop()
         with self._lock:
             self._sources.clear()
+            self._pincers = None
             self._height_target = self.config.stance.sit_height
             self._standing = False
         self.gait.reset()
@@ -257,6 +282,7 @@ class Controller:
             target_height = self._height_target
             standing = self._standing
             pose = self._pose
+            pincers = None if self._pincers is None else dict(self._pincers)
             delta = target_height - self._height
             step = HEIGHT_RATE * dt
             self._height += max(-step, min(step, delta))
@@ -268,10 +294,16 @@ class Controller:
         command = Velocity() if (settling or not standing) else raw.scaled(self.config)
 
         feet = self.gait.step(dt, command, height)
+        if pincers:
+            feet = dict(feet)
+            for name, (dx, dy, dz) in pincers.items():
+                x, y, z = feet[name]
+                feet[name] = (x + dx, y + dy, z + dz)
         pose = self.gait.pose_overlay(pose)
         angles, limited = self.kinematics.solve_reporting(feet, pose)
         pulses = self.kinematics.pulse_frame(angles)
         self.board.set_frame(pulses)
+        self.board.set_load(LoadKind.Stand if standing else LoadKind.Sit)
         simulate = getattr(self.board, "simulate_contacts", None)
         if simulate is not None:
             simulate(feet, height)

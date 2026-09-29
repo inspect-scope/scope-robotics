@@ -64,7 +64,9 @@ def test_pages_and_state_are_served(client):
     body = client.get("/api/state").json()
     assert body["state"] == "off"
     assert set(body["feet"]) == set(body["coxae"]) == set(body["joints"]) == set(body["chains"])
-    assert {"imu", "camera", "ip", "uptime_s", "last_error", "actuators", "pulses", "touch_volts"} <= set(body)
+    assert {"imu", "camera", "hand", "ip", "uptime_s", "last_error", "actuators", "pulses", "touch_volts"} <= set(body)
+    assert body["hand"]["follow"] == "off" and body["hand"]["points"] == []
+    assert client.get("/api/config").json()["hand"] is False
     assert len(body["pulses"]) == 18
     assert all(len(points) == 4 and len(points[0]) == 3 for points in body["chains"].values())
     l1 = body["actuators"]["L1"]["coxa"]
@@ -246,6 +248,50 @@ def test_stance_mode_retunes(client):
         cfg = client.get("/api/config").json()["mode"]
         assert cfg["current"] == "offroad"
         assert {row["chica"] for row in cfg["catalog"]} == {"standard", "race", "offroad"}
+
+
+def test_hand_follow_toggles_when_wired(client):
+    class DummyHand:
+        def __init__(self):
+            self.follow = "off"
+            self.puppet = "lean"
+
+        def set_follow(self, state):
+            self.follow = state
+
+        def set_puppet(self, state):
+            self.puppet = state
+
+        def snapshot(self):
+            return {"follow": self.follow, "tracking": False, "error": None}
+
+        def stop(self):
+            pass
+
+    client.state.hand = DummyHand()
+    with client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "hand", "on": True})
+        assert _wait_for(lambda: client.state.hand.follow == "on")
+        socket.send_json({"type": "hand", "on": False})
+        assert _wait_for(lambda: client.state.hand.follow == "off")
+        socket.send_json({"type": "hand", "puppet": "pincer"})
+        assert _wait_for(lambda: client.state.hand.puppet == "pincer")
+    assert client.get("/api/config").json()["hand"] is True
+
+
+def test_hand_landmarks_map_on_the_server(client):
+    from hexapod.hand import Follow, HandFollower
+
+    client.state.hand = HandFollower(client.controller)
+    pts = [[0.95, 0.5, 0.0] for _ in range(21)]
+    pts[5] = [0.89, 0.5, 0.0]
+    pts[17] = [0.99, 0.5, 0.0]
+    pts[9] = [0.95, 0.4, 0.0]
+    body = client.post("/api/hand-landmarks", json={"points": pts}).json()
+    assert body["source"] == "mediapipe" and body["tracking"] is True
+    client.state.hand.set_follow(Follow.On)
+    client.post("/api/hand-landmarks", json={"points": pts})
+    assert client.controller.snapshot().pose["x"] < 0
 
 
 def test_gait_pattern_switches(client):

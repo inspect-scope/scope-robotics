@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .DS_Store
+hexapod/models/*.task
+hexapod/static/vendor/mediapipe/*.task
+hexapod/static/vendor/mediapipe/wasm/*.wasm
