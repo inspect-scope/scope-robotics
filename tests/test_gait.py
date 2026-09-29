@@ -3,7 +3,10 @@ import math
 import pytest
 
 from hexapod import config as config_mod
-from hexapod.gait import Gait, GaitKind, STANCE_FRACTION, TrickKind, Velocity, walk_catalog
+from hexapod.gait import (
+    Gait, GaitKind, LEAN_DEG, SHIFT_MM, STANCE_FRACTION, TrickKind, Velocity,
+    walk_catalog,
+)
 from hexapod.kinematics import BodyPose
 
 
@@ -164,3 +167,62 @@ def test_bounce_bobs_without_leaving_the_ground(setup):
     assert max(zs) > 2.0
     assert min(zs) < -2.0
     assert gait.trick == TrickKind.Bounce
+
+
+def _pose_run(gait, config, seconds):
+    dt = 1.0 / config.rate_hz
+    poses = []
+    for _ in range(int(seconds * config.rate_hz)):
+        gait.step(dt, Velocity(), config.stance.ride_height)
+        poses.append(gait.pose_overlay(BodyPose()))
+    return poses
+
+
+def test_flex_leans_pitch_then_roll(setup):
+    config, gait = setup
+    gait.start_trick(TrickKind.Flex)
+    poses = _pose_run(gait, config, 4.0)
+    pitches = [p.pitch for p in poses]
+    rolls = [p.roll for p in poses]
+    assert max(pitches) > LEAN_DEG * 0.8
+    assert max(rolls) > LEAN_DEG * 0.8
+    early, late = poses[:40], poses[80:160]
+    assert max(abs(p.roll) for p in early) < 0.2
+    assert max(abs(p.pitch) for p in late) < 0.2
+    assert gait.trick is None
+
+
+def test_lean_pitch_loops_on_that_axis(setup):
+    config, gait = setup
+    gait.start_trick(TrickKind.LeanPitch)
+    poses = _pose_run(gait, config, 3.0)
+    assert max(p.pitch for p in poses) > 4.0
+    assert min(p.pitch for p in poses) < -4.0
+    assert all(p.roll == 0 and p.yaw == 0 for p in poses)
+    assert gait.trick == TrickKind.LeanPitch
+
+
+def test_dance_swings_the_body_around(setup):
+    config, gait = setup
+    gait.start_trick(TrickKind.Dance)
+    poses = _pose_run(gait, config, 4.0)
+    xs = [p.x for p in poses]
+    ys = [p.y for p in poses]
+    assert max(xs) > SHIFT_MM * 0.8
+    assert max(ys) > SHIFT_MM * 0.8
+    assert gait.trick == TrickKind.Dance
+
+
+def test_spin_ripples_in_place_then_restores(setup):
+    config, gait = setup
+    gait.set_pattern(GaitKind.Tripod)
+    gait.start_trick(TrickKind.Spin)
+    assert gait.pattern == GaitKind.Ripple
+    dt = 1.0 / config.rate_hz
+    for _ in range(int(2.0 * config.rate_hz)):
+        gait.step(dt, Velocity(), config.stance.ride_height)
+    assert gait.velocity.yaw_rate > 10.0
+    assert gait.pattern == GaitKind.Ripple
+    gait.stop_trick()
+    assert gait.trick is None
+    assert gait.pattern == GaitKind.Tripod

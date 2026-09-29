@@ -212,6 +212,25 @@ def test_jump_runs_and_lands(client):
         assert _wait_for(lambda: client.controller.snapshot().state == "standing", seconds=2.0)
 
 
+def test_trick_flex_while_standing(client):
+    with client.websocket_connect("/ws") as socket:
+        socket.send_json({"type": "trick", "name": "dance"})
+        time.sleep(0.15)
+        assert client.controller.snapshot().trick is None
+        socket.send_json({"type": "stand"})
+        assert _wait_for(lambda: client.controller.snapshot().state == "standing")
+        socket.send_json({"type": "trick", "name": "dance"})
+        assert _wait_for(lambda: client.controller.snapshot().state == "dancing")
+        socket.send_json({"type": "trick", "on": False})
+        assert _wait_for(lambda: client.controller.snapshot().trick is None)
+        socket.send_json({"type": "trick", "name": "dance"})
+        assert _wait_for(lambda: client.controller.snapshot().trick == "dance")
+        socket.send_json({"type": "gait", "pattern": "ripple"})
+        assert _wait_for(lambda: client.controller.snapshot().trick is None)
+        ids = [row["id"] for row in client.get("/api/config").json()["gait"]["catalog_tricks"]]
+        assert ids == ["flex", "lean-pitch", "lean-roll", "lean-yaw", "spin", "dance"]
+
+
 def test_stance_mode_retunes(client):
     with client.websocket_connect("/ws") as socket:
         socket.send_json({"type": "stand"})

@@ -411,7 +411,7 @@ the server still starts and the panel says so.
   `W A S D` moves, `Q E` turns, `Esc` releases. Those keys do nothing until then. `J` twice jumps, same as the button.
 - Space is e-stop from anywhere. So is the red button, and `POST /stop` if the page is wedged.
 - Stand, Sit and Torque are separate. Sit before you cut torque. Jump is two clicks. Bounce loops until off.
-- Gait and stance-mode dropdowns sit on that row. walks are the Chica set (tripod / triple / ripple / wave). modes are normal / speed / offroad.
+- Gait, tricks and stance-mode dropdowns sit on that row. walks are the Chica set (tripod / triple / ripple / wave). tricks are flex, axis leans, spin (ripple in place) and dance. modes are normal / speed / offroad.
 - The top-down view shows live foot positions. Green is on the ground, hollow blue is mid swing, yellow means that leg hit a joint limit.
 - Posture and gait sliders tune ride height, body tilt, cycle time, step lift and top speed while it walks.
 - The attitude tile shows pitch and roll from the IMU and the turn rates.

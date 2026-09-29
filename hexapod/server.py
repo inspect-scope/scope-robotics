@@ -26,7 +26,7 @@ from .board import BoardError
 from .camera import Camera, CameraError
 from .config import Config
 from .controller import COMMAND_TTL, POSE_LIMITS, Controller
-from .gait import TrickKind, WALK_KINDS, walk_catalog, Velocity
+from .gait import TrickKind, WALK_KINDS, walk_catalog, trick_catalog, Velocity
 from .hand import Follow
 from .mode import MODE_KINDS, mode_catalog
 from .state import RobotState
@@ -136,6 +136,7 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                     "patterns": list(WALK_KINDS),
                     "catalog": walk_catalog(config.tripod_groups),
                     "tricks": [TrickKind.Bounce, TrickKind.Jump],
+                    "catalog_tricks": trick_catalog(),
                 },
                 "mode": {
                     "current": state.controller.mode,
@@ -369,6 +370,15 @@ def _handle(controller: Controller, config: Config, message: Dict[str, Any], han
         controller.jump()
     elif kind == "bounce":
         controller.set_bounce(bool(message.get("on")))
+    elif kind == "trick":
+        name = message.get("name")
+        if not message.get("on", True) or not name:
+            controller.stop_trick()
+        else:
+            try:
+                controller.start_trick(str(name))
+            except ValueError:
+                log.warning("bad trick %r", name)
     elif kind == "hand":
         if hand is None:
             log.warning("hand follow is not available")
