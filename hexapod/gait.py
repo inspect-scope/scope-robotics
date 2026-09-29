@@ -32,7 +32,21 @@ class GaitKind:
 class TrickKind:
     Bounce = "bounce"
     Jump = "jump"
+    Flex = "flex"
+    LeanPitch = "lean-pitch"
+    LeanRoll = "lean-roll"
+    LeanYaw = "lean-yaw"
+    Spin = "spin"
+    Dance = "dance"
 
+
+POSE_TRICKS = frozenset((
+    TrickKind.Flex, TrickKind.LeanPitch, TrickKind.LeanRoll, TrickKind.LeanYaw, TrickKind.Dance,
+))
+MENU_TRICKS = (
+    TrickKind.Flex, TrickKind.LeanPitch, TrickKind.LeanRoll,
+    TrickKind.LeanYaw, TrickKind.Spin, TrickKind.Dance,
+)
 
 WAVE_ORDER = ("R1", "R2", "R3", "L3", "L2", "L1")
 STANCE_FRACTION = 0.5  # tripod: half the cycle on the ground
@@ -45,6 +59,13 @@ JUMP_AIR_MM = 28.0
 JUMP_CROUCH_S = 0.16
 JUMP_PUSH_S = 0.10
 JUMP_LAND_S = 0.18
+# Same envelope as controller.POSE_LIMITS. Gait cannot import controller.
+LEAN_DEG = 8.0
+SHIFT_MM = 15.0
+FLEX_AXIS_S = 1.6
+LEAN_HZ = 0.45
+DANCE_HZ = 0.35
+SPIN_YAW_DPS = 24.0
 
 
 @dataclass(frozen=True)
@@ -147,13 +168,36 @@ def walk_catalog(tripod_groups: List[List[str]]) -> List[Dict[str, str]]:
     return [{"id": kind, "chica": walks[kind].chica} for kind in WALK_KINDS]
 
 
+TRICK_LABELS = {
+    TrickKind.Flex: "flex",
+    TrickKind.LeanPitch: "lean pitch",
+    TrickKind.LeanRoll: "lean roll",
+    TrickKind.LeanYaw: "lean yaw",
+    TrickKind.Spin: "spin",
+    TrickKind.Dance: "dance",
+}
+
+
+def trick_catalog() -> List[Dict[str, str]]:
+    return [{"id": kind, "label": TRICK_LABELS[kind]} for kind in MENU_TRICKS]
+
+
 @dataclass
 class TrickOut:
     """Overlay the stepper applies on top of a (possibly settled) stance."""
 
     height_adj: float = 0.0
     body_z: float = 0.0
+    drive: Optional[Velocity] = None
     blocking: bool = False
+
+
+def _wave(t: float, hz: float, amp: float) -> float:
+    return amp * math.sin(2.0 * math.pi * hz * t)
+
+
+def _sine_cycle(t: float, period: float, amp: float) -> float:
+    return amp * math.sin(2.0 * math.pi * t / period)
 
 
 class Gait:
@@ -167,7 +211,10 @@ class Gait:
         self.trick: Optional[str] = None
         self._bounce_t = 0.0
         self._jump_t = 0.0
+        self._trick_t = 0.0
         self._body_z = 0.0
+        self._trick_pose = BodyPose()
+        self._saved_pattern: Optional[str] = None
         self.set_pattern(pattern)
 
     def set_pattern(self, pattern: str) -> None:
@@ -186,11 +233,12 @@ class Gait:
         self.phase = 0.0
         self.velocity = Velocity()
         self.walking = False
-        self.trick = None
+        self.stop_trick()
         self._bounce_t = 0.0
         self._jump_t = 0.0
 
     def start_jump(self) -> None:
+        self.stop_trick()
         self.trick = TrickKind.Jump
         self._jump_t = 0.0
         self.walking = False
@@ -199,11 +247,43 @@ class Gait:
 
     def set_bounce(self, enabled: bool) -> None:
         if enabled:
+            self.stop_trick()
             self.trick = TrickKind.Bounce
             self._bounce_t = 0.0
             return
         if self.trick == TrickKind.Bounce:
             self.trick = None
+
+    def start_trick(self, kind: str) -> None:
+        if kind == TrickKind.Jump:
+            self.start_jump()
+            return
+        if kind == TrickKind.Bounce:
+            self.set_bounce(True)
+            return
+        if kind not in MENU_TRICKS:
+            raise ValueError(f"unknown trick {kind!r}")
+        self.stop_trick()
+        self._saved_pattern = self.pattern
+        self.trick = kind
+        self._trick_t = 0.0
+        self._trick_pose = BodyPose()
+        if kind == TrickKind.Spin:
+            self.set_pattern(GaitKind.Ripple)
+            return
+        self.walking = False
+        self.velocity = Velocity()
+        self.phase = 0.0
+
+    def stop_trick(self) -> None:
+        saved = self._saved_pattern
+        self.trick = None
+        self._trick_t = 0.0
+        self._body_z = 0.0
+        self._trick_pose = BodyPose()
+        self._saved_pattern = None
+        if saved is not None and saved != self.pattern:
+            self.set_pattern(saved)
 
     def strokes(self, velocity: Velocity) -> Dict[str, Tuple[float, float]]:
         """Ground displacement each foot covers during one stance phase, per leg."""
@@ -228,6 +308,8 @@ class Gait:
         overlay = self._advance_trick(dt)
         if overlay.blocking:
             command = Velocity()
+        elif overlay.drive is not None:
+            command = overlay.drive
 
         s = self.config.stance
         # A full stop takes ~2 cycles of ramp; that is gentle enough to stay upright.
@@ -272,21 +354,64 @@ class Gait:
         return feet
 
     def pose_overlay(self, pose: BodyPose) -> BodyPose:
-        """Body-frame hop. Bounce and jump lift the chassis without retargeting feet."""
-        if self.trick is None:
+        """Body-frame hop and lean. Pose tricks replace the operator lean."""
+        z = pose.z + self._body_z
+        if self.trick in POSE_TRICKS:
+            return replace(self._trick_pose, z=z)
+        if self.trick is None and not self._body_z:
             return pose
-        return replace(pose, z=pose.z + self._body_z)
+        return replace(pose, z=z)
 
     def _advance_trick(self, dt: float) -> TrickOut:
         self._body_z = 0.0
+        self._trick_pose = BodyPose()
         if self.trick == TrickKind.Bounce:
             self._bounce_t += dt
             self._body_z = BOUNCE_AMP_MM * math.sin(2.0 * math.pi * BOUNCE_HZ * self._bounce_t)
             return TrickOut(body_z=self._body_z, blocking=False)
 
-        if self.trick != TrickKind.Jump:
+        if self.trick == TrickKind.Jump:
+            return self._jump_tick(dt)
+        if self.trick is None:
             return TrickOut()
 
+        self._trick_t += dt
+        if self.trick == TrickKind.Flex:
+            return self._flex_tick()
+        if self.trick == TrickKind.LeanPitch:
+            self._trick_pose = BodyPose(pitch=_wave(self._trick_t, LEAN_HZ, LEAN_DEG))
+            return TrickOut(blocking=True)
+        if self.trick == TrickKind.LeanRoll:
+            self._trick_pose = BodyPose(roll=_wave(self._trick_t, LEAN_HZ, LEAN_DEG))
+            return TrickOut(blocking=True)
+        if self.trick == TrickKind.LeanYaw:
+            self._trick_pose = BodyPose(yaw=_wave(self._trick_t, LEAN_HZ, LEAN_DEG))
+            return TrickOut(blocking=True)
+        if self.trick == TrickKind.Spin:
+            return TrickOut(drive=Velocity(0.0, 0.0, SPIN_YAW_DPS), blocking=False)
+        if self.trick == TrickKind.Dance:
+            w = 2.0 * math.pi * DANCE_HZ * self._trick_t
+            self._trick_pose = BodyPose(
+                x=SHIFT_MM * math.sin(w),
+                y=SHIFT_MM * math.cos(w),
+                yaw=LEAN_DEG * math.sin(w),
+                roll=0.5 * LEAN_DEG * math.cos(w),
+            )
+            return TrickOut(blocking=True)
+        return TrickOut()
+
+    def _flex_tick(self) -> TrickOut:
+        t = self._trick_t
+        if t < FLEX_AXIS_S:
+            self._trick_pose = BodyPose(pitch=_sine_cycle(t, FLEX_AXIS_S, LEAN_DEG))
+            return TrickOut(blocking=True)
+        if t < 2.0 * FLEX_AXIS_S:
+            self._trick_pose = BodyPose(roll=_sine_cycle(t - FLEX_AXIS_S, FLEX_AXIS_S, LEAN_DEG))
+            return TrickOut(blocking=True)
+        self.stop_trick()
+        return TrickOut()
+
+    def _jump_tick(self, dt: float) -> TrickOut:
         self._jump_t += dt
         t = self._jump_t
         crouch_end = JUMP_CROUCH_S

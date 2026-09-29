@@ -229,6 +229,7 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     <button id="sit">Sit</button>
     <button id="jump" title="click twice to jump">Jump</button>
     <button id="bounce" title="loops until off">Bounce <span class="loop" aria-hidden="true">↻</span></button>
+    <select id="trick-pick" aria-label="Tricks"></select>
     <select id="gait-pick" aria-label="Gait"></select>
     <select id="mode-pick" aria-label="Mode"></select>
     <button id="torque">Torque</button>
@@ -512,6 +513,40 @@ function markGait(name) {
 
 $("gait-pick").onchange = () => send({ type: "gait", pattern: $("gait-pick").value });
 
+function buildTricks(rows) {
+  const el = $("trick-pick");
+  el.textContent = "";
+  const label = document.createElement("option");
+  label.value = "";
+  label.textContent = "tricks";
+  label.disabled = true;
+  label.hidden = true;
+  label.selected = true;
+  el.appendChild(label);
+  for (const row of rows || []) {
+    const opt = document.createElement("option");
+    opt.value = row.id;
+    opt.textContent = row.label || row.id;
+    el.appendChild(opt);
+  }
+}
+
+let liveTrick = "";
+
+function markTrick(name) {
+  liveTrick = (!name || name === "bounce" || name === "jump") ? "" : name;
+  $("trick-pick").selectedIndex = 0;
+  $("trick-pick").classList.toggle("on", !!liveTrick);
+}
+
+$("trick-pick").onchange = () => {
+  const name = $("trick-pick").value;
+  $("trick-pick").selectedIndex = 0;
+  if (!name) return;
+  if (name === liveTrick) send({ type: "trick", on: false });
+  else send({ type: "trick", name, on: true });
+};
+
 function buildModes(entries, current) {
   fillPick($("mode-pick"), catalogRows(entries), current);
 }
@@ -567,6 +602,7 @@ async function loadConfig() {
   setSlider("step_lift", cfg.gait.step_lift);
   setSlider("max_speed", cfg.gait.max_speed);
   buildGaits(cfg.gait.catalog || cfg.gait.patterns || ["tripod"], cfg.gait.pattern || "tripod");
+  buildTricks(cfg.gait.catalog_tricks || []);
   buildModes((cfg.mode && cfg.mode.catalog) || ["normal"], (cfg.mode && cfg.mode.current) || "normal");
   ["pitch", "roll", "yaw", "x", "y"].forEach((k) => setSlider(k, 0));
   $("feet").innerHTML = cfg.legs.map((n) =>
@@ -1000,6 +1036,7 @@ function draw3d(s) {
 /* ---------------- render ---------------- */
 const STATE_COLOR = {
   walking: "--accent", jumping: "--accent", bouncing: "--accent",
+  flexing: "--accent", leaning: "--accent", dancing: "--accent",
   standing: "--good", sitting: "--ink-2", off: "--muted", estop: "--critical",
 };
 // Status thresholds mirror WARN_VOL / WARN_CUR in the Chica config.
@@ -1037,6 +1074,7 @@ function render(s) {
   $("state-icon").style.background = `var(${STATE_COLOR[s.state] || "--muted"})`;
   markGait(s.gait);
   markMode(s.mode);
+  markTrick(s.trick);
   setSlider("cycle_s", s.cycle_s);
   setSlider("step_lift", s.step_lift);
   setSlider("max_speed", s.max_speed);

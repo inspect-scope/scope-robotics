@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 
 from .board import Servo2040
 from .config import JOINTS, Config
-from .gait import Gait, TrickKind, Velocity
+from .gait import Gait, TrickKind, Velocity, MENU_TRICKS, POSE_TRICKS
 from .kinematics import BodyPose, HexapodKinematics, JointAngles
 from .mode import StanceMode, lookup_mode, modes_for
 
@@ -149,7 +149,12 @@ class Controller:
             self._height_target = max(s.sit_height, min(105.0, float(height)))
             self._standing = self._height_target > s.sit_height + 1.0
 
+    def _drop_menu_trick(self) -> None:
+        if self.gait.trick in MENU_TRICKS:
+            self.gait.stop_trick()
+
     def stand(self) -> None:
+        self._drop_menu_trick()
         self.board.set_torque(True)
         self.set_height(self.config.stance.ride_height)
 
@@ -158,9 +163,11 @@ class Controller:
         self.set_height(self.config.stance.sit_height)
 
     def set_pattern(self, pattern: str) -> None:
+        self._drop_menu_trick()
         self.gait.set_pattern(pattern)
 
     def set_mode(self, name: str) -> None:
+        self._drop_menu_trick()
         spec = lookup_mode(self.modes, name)
         if spec is None:
             raise ValueError(f"unknown stance mode {name!r}")
@@ -176,6 +183,14 @@ class Controller:
 
     def set_bounce(self, enabled: bool) -> None:
         self.gait.set_bounce(enabled)
+
+    def start_trick(self, kind: str) -> None:
+        if not self._standing or self.board.estopped:
+            return
+        self.gait.start_trick(kind)
+
+    def stop_trick(self) -> None:
+        self.gait.stop_trick()
 
     def torque_off(self) -> None:
         self.board.set_torque(False)
@@ -296,6 +311,12 @@ class Controller:
             state = "walking"
         elif self.gait.trick == TrickKind.Bounce:
             state = "bouncing"
+        elif self.gait.trick == TrickKind.Flex:
+            state = "flexing"
+        elif self.gait.trick == TrickKind.Dance:
+            state = "dancing"
+        elif self.gait.trick in POSE_TRICKS:
+            state = "leaning"
         elif standing:
             state = "standing"
         else:
