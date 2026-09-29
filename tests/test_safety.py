@@ -49,9 +49,9 @@ def test_overcurrent_trips_the_estop(stack):
 
 
 def test_current_under_the_cut_does_not_trip(stack):
-    controller, _ = stack(amps=6.0)
+    controller, _ = stack(amps=3.5)
     controller.stand()
-    time.sleep(1.8)  # longer than current_cut_s
+    time.sleep(1.8)  # longer than current_cut_s and still_s
     s = controller.snapshot()
     assert not s.estopped and s.safety_trip is None
 
@@ -89,11 +89,15 @@ def test_config_rejects_nonsense(tmp_path):
     path = tmp_path / "hexapod.yaml"; path.write_text(yaml.safe_dump(raw))
     with pytest.raises(ValueError, match="volts_warn"):
         config_mod.load(str(path))
-    for bad in ({"current_cut_a": 0}, {"volts_cut_s": 0}, {"current_cut_s": -1}):
+    for bad in ({"current_cut_a": 0}, {"volts_cut_s": 0}, {"current_cut_s": -1}, {"sit_cut_a": 0}):
         raw["safety"] = bad
         path.write_text(yaml.safe_dump(raw))
         with pytest.raises(ValueError, match="positive"):
             config_mod.load(str(path))
+    raw["safety"] = {"sit_cut_a": 6, "stand_cut_a": 1.5}
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="nondecreasing"):
+        config_mod.load(str(path))
 
 
 def test_tolerant_open_survives_a_missing_port():
@@ -138,6 +142,37 @@ def test_lost_telemetry_trips(stack):
     board.fake_telemetry_frozen = True
     assert _wait_for(lambda: controller.snapshot().estopped, seconds=4.0)
     assert "no telemetry" in controller.snapshot().safety_trip
+
+
+def test_settled_sit_current_catches_one_stall(stack):
+    controller, board = stack(amps=4.0)
+    board.set_torque(True)
+    assert _wait_for(lambda: controller.snapshot().estopped, seconds=3.0)
+    assert "settled sit current" in controller.snapshot().safety_trip
+
+
+def test_settled_stand_current_catches_one_stall(stack):
+    controller, _ = stack(amps=7.0)
+    controller.stand()
+    assert _wait_for(lambda: controller.snapshot().estopped, seconds=3.0)
+    trip = controller.snapshot().safety_trip
+    assert trip and trip.startswith("settled stand current")
+    assert "7.0 A" in trip
+
+
+def test_moving_skips_the_stand_cut(stack):
+    from hexapod.gait import Velocity
+
+    controller, _ = stack(amps=6.5)
+    controller.stand()
+    assert _wait_for(lambda: controller.snapshot().state == "standing")
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        controller.command("test", Velocity(0, 1, 0), priority=10)
+        assert not controller.snapshot().estopped
+        time.sleep(0.05)
+    assert _wait_for(lambda: controller.snapshot().estopped, seconds=3.0)
+    assert "settled stand current" in controller.snapshot().safety_trip
 
 
 def test_the_trip_covers_jog_too():

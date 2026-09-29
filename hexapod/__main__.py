@@ -10,7 +10,7 @@ import time
 from typing import List, Optional
 
 from . import config as config_mod
-from .board import BoardError, FakeBoard, Servo2040
+from .board import BoardError, FakeBoard, LoadKind, Servo2040
 from .config import JOINTS, Config
 from .controller import POSE_LIMITS, Controller
 from .gait import TripodGait, Velocity
@@ -128,6 +128,7 @@ def cmd_neutral(args: argparse.Namespace) -> int:
 
     board = _board(config, args)
     with board:
+        board.set_load(LoadKind.Stand if height > config.stance.sit_height + 1.0 else LoadKind.Sit)
         board.set_frame(frame)
         board.set_torque(True)
         print("torque on, Ctrl-C to release")

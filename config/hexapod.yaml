@@ -24,12 +24,14 @@ control:
 # one TOTAL current for all 18 servos, and the pack voltage. Mean over cut_s past
 # the cut -> estop (torque off, latched; clear it from the client page).
 # Idle is about 0.2 A on the stand. Walking current is not measured yet. One
-# stalled FT5330M adds about 4 A (3.9 A spec at 7.4 V) and two read about 8 A,
-# so the 10 A cut needs three simultaneous stalls, not one. Three femurs died on
-# 26 Sep 2026 with nothing acting on current; see docs/troubleshooting.md.
+# stalled FT5330M adds about 4 A. The 10 A ceiling still needs three stalls;
+# sit_cut_a / stand_cut_a catch one at a held pose. See docs/troubleshooting.md.
 safety:
-  current_cut_a: 10        # Chica's host app cut at 10 A after 2 s
+  current_cut_a: 10        # hard ceiling any mode. one stall is ~4 A, so this needs three
   current_cut_s: 1.0
+  still_s: 1.0             # pulses unchanged this long -> use sit/stand cut
+  sit_cut_a: 1.5           # legs free / sat. poke --centre. catches one stall
+  stand_cut_a: 5.5         # standing still. between ~4 A stand and ~7 A stand+stall
   volts_warn: 6.4          # logged
   volts_cut: 6.0           # estop when the mean over volts_cut_s is below this, torque on
   volts_cut_s: 2.0
