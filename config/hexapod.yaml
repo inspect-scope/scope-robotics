@@ -11,7 +11,9 @@
 # tuned to do.
 
 serial:
-  port: /dev/ttyACM0       # Pi: usually ttyACM0. macOS: /dev/tty.usbmodem*
+  # By serial number: ttyACM0 can move between boots, and this names which board.
+  # A spare Servo2040 has its own path; `hexapod ports` lists them.
+  port: /dev/serial/by-id/usb-Raspberry_Pi_Pico_E66598541B2A2F33-if00
   baudrate: 115200         # ignored by USB CDC, kept because pyserial wants it
   timeout_s: 0.05
 

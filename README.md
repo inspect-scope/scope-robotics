@@ -368,9 +368,24 @@ ratio between axes rather than their absolute size, so the magnitude is the one
 number that means "this sensor works" at any mounting angle. A board resting on
 its edge reads almost all of its gravity on x, and that is fine.
 
-On this build it reads 0.980 g with a bias of -3.15, +1.33, -0.61 deg/s. Both
-are normal for a GY-521. The 2% shortfall is scale-factor error and washes out
-of any tilt calculation.
+On this build it read 0.980 g with a bias of -3.15, +1.33, -0.61 deg/s, on the
+bench on 13 Sep 2026. Both are normal for a GY-521. The 2% shortfall is
+scale-factor error and washes out of any tilt calculation.
+
+On 29 Sep 2026, fitted in the body, it read 1.235 g (z -1.233 g). That is out
+of spec and not yet explained; see
+[docs/troubleshooting.md](docs/troubleshooting.md). One position cannot tell an
+offset from a scale error. `tools/imucal.py` can:
+
+```sh
+sudo systemctl stop hexapod
+python3 tools/imucal.py            # six positions; --axes z for upright and upside down only
+sudo systemctl start hexapod
+```
+
+It walks you through turning the robot so gravity lies along each body axis in
+turn, then prints each chip axis's offset and scale against the datasheet
+tolerance, and the `imu.axis_map` that matches how the board is mounted.
 
 Two things about the bias. It moves with temperature, so measure it after the
 electronics have been running ten minutes, not from cold. And prefer averaging
@@ -399,9 +414,12 @@ about.
 `imu.axis_map` in [config/hexapod.yaml](config/hexapod.yaml) says how the
 chip is mounted. Each entry is the chip axis pointing along the body axis
 (+X right, +Y forward, +Z up), with an optional minus sign. Set it once the
-board is bolted down: tip the robot nose up and check the horizon on `/status`
-moves down; lean it right and check the horizon tilts. If the IMU is missing
-the server still starts and the panel says so.
+board is bolted down: `tools/imucal.py` prints it. Then tip the robot nose up
+and check the horizon on `/status` moves down; lean it right and check the
+horizon tilts. The horizon cannot show the robot upside down: tilt comes from
+ratios, so pitch and roll stay inside ±90°, and a robot on its back reads close
+to level. If the IMU is missing the server still starts and the
+panel says so.
 
 ## Web interface
 
@@ -576,6 +594,7 @@ The stance block is ours, not a copy of Chica's `MODE_STANDARD`. It puts every f
 | [deploy/](deploy/) | systemd units, kiosk launcher, installer. |
 | [tools/poke.py](tools/poke.py) | Standalone link test; `--census` maps headers to joints by eye, `--probe` finds dead headers by current. Only needs pyserial. |
 | [tools/i2cwatch.py](tools/i2cwatch.py) | Rolling i2c success rate. Finds a loose IMU lead. No dependencies. |
+| [tools/imucal.py](tools/imucal.py) | Six-position accelerometer check: offset and scale per axis, and `imu.axis_map`. No dependencies. |
 | [tools/servolog.py](tools/servolog.py) | Prints every servo that moves while you press buttons, and a summary. Stdlib only. |
 | [tools/preflight.py](tools/preflight.py) | Checks env, config, maths, IMU, camera and board in one run. |
 | [tools/sync.sh](tools/sync.sh) | rsync the working tree to the Pi over ssh. |

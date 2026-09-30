@@ -160,6 +160,27 @@ def test_settled_stand_current_catches_one_stall(stack):
     assert "7.0 A" in trip
 
 
+def test_a_still_window_longer_than_the_current_window_still_trips():
+    """Both current checks read one queue of samples. The shorter window must
+    not throw away samples the longer one needs."""
+    from dataclasses import replace
+
+    config = config_mod.load()
+    config = replace(config, safety=replace(config.safety, current_cut_s=1.0, still_s=2.0))
+    board = FakeBoard(config)
+    board.fake_amps_on = 3.0  # one stall at a held sit: over sit_cut_a, under current_cut_a
+    board.open()
+    try:
+        board.set_torque(True)
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline and not board.safety_trip:
+            board.set_frame([1500] * 18)
+            time.sleep(0.05)
+        assert board.safety_trip and board.safety_trip.startswith("settled sit current")
+    finally:
+        board.close()
+
+
 def test_moving_skips_the_stand_cut(stack):
     from hexapod.gait import Velocity
 

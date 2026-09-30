@@ -95,6 +95,14 @@ dtoverlay=imx708,cam0
 The `compatible`, `width` and `reset-gpio` lines are correctly placed — they
 *are* parameters of the `mipi-dbi-spi` overlay above them.
 
+**The 50 kHz line came out on 29 Sep 2026.** The read failures turned out to be
+two bad contacts, not bus speed. It is commented out in `config.txt` (backup at
+`config.txt.bak-2026-09-29`), and `clock-frequency` under
+`/proc/device-tree/axi/pcie@1000120000/rp1/i2c@74000/` reads 100000. First run
+at 100 kHz: 0 errors over 259 s of service reads, about 2,600, with the touch
+controller on the same pins. If failures return, restore the backup before
+anything else.
+
 ### Phantom device at 0x14
 
 An address appeared that matches nothing in the build, and persisted with the
@@ -173,6 +181,33 @@ noise. The latch-up itself is real either way, and a walking robot with
 vibrating connectors will reproduce it, so bus recovery in `imu.py` is still
 worth building.
 
+### `|a| = 1.235 g, expected 1.00 +/-0.10`
+
+Preflight, 29 Sep 2026, 22:40, service stopped, servos out of the robot:
+
+```
+[PASS] 227 reads, none failed
+[FAIL] |a| = 1.235 g, expected 1.00 +/-0.10   (x+0.024  y-0.062  z-1.233)
+```
+
+**Open.** What is known:
+
+- On 13 Sep, on the bench before the body existed, it read 0.980 g.
+- Magnitude does not depend on orientation, so the reading has shifted. A
+  hand cannot hold an extra 0.235 g steady through a 3 s average.
+- z is negative, so the chip's z axis pointed down at the time. Either the
+  body was upside down on the bench, or the GY-521 is mounted face-down and
+  `imu.axis_map` (still the default `[x, y, z]`) is wrong. The body's
+  orientation during the run was not recorded.
+- The bus is sound: no failed reads, before or after the move to 100 kHz.
+- `/status` did not show it. Pitch and roll read -2.8 and -1.2 deg; tilt comes
+  from ratios and stays inside ±90°, so an inverted chip reads near level.
+
+One position cannot tell an offset from a scale error. Next is
+`tools/imucal.py`, with the service stopped: z about +0.77 / -1.23 g is a
+-0.23 g offset and a working chip; about ±1.23 g is a scale fault, replace the
+GY-521. The six-position run also prints the `axis_map`.
+
 ---
 
 ## Servo2040
@@ -226,7 +261,7 @@ Two requirements when doing this — reconnect periodically rather than just
 tolerating absence, and make `/move` fail **loudly** while the board is
 offline rather than silently accepting commands.
 
-**Written 26 Sep 2026, not yet deployed to the Pi.** The text above described
+**Written 26 Sep 2026, deployed to the Pi 29 Sep.** The text above described
 the intent; `cmd_serve` still called `board.open()` bare, so the server exited
 and systemd restarted it every 2 s. Adding the exclusive port lock made this
 visible: the moment `poke.py --centre` held the port, the service crash-looped
@@ -753,7 +788,9 @@ hour before it died, so **a clean probe does not clear a servo**. It exercises
 one header at a time with the legs free; standing and walking loads never
 happen during it.
 
-**What the trips catch, and what they miss.** In the repo, not yet on the Pi:
+**What the trips catch, and what they miss.** On the Pi since 29 Sep 2026,
+22:30. Until then the Pi ran code from 25 Sep with none of them, which a
+checksum dry run of `tools/sync.sh` showed:
 
 - The board's IO thread estops, torque on, on a total over 10 A (mean over 1 s),
   a held sit over 1.5 A, a held stand over 5.5 A, under 6.0 V (mean over 2 s),

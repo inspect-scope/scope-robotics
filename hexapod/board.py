@@ -60,14 +60,20 @@ def _pulses_moved(before: Sequence[int], after: Sequence[int]) -> bool:
     return any(abs(a - b) > STILL_PULSE_US for a, b in zip(before, after))
 
 
+def _prune(seen: Deque[Tuple[float, float]], now: float, keep: float) -> None:
+    """Drop readings older than `keep` seconds. Pass the longest window read from `seen`."""
+    while seen and seen[0][0] < now - keep:
+        seen.popleft()
+
+
 def _held_mean(seen: Deque[Tuple[float, float]], now: float, span: float) -> Optional[float]:
     """Mean of the readings in the last `span` seconds, once they cover most of it.
-    A mean rather than every-sample-over, so one low reading cannot reset a trip."""
-    while seen and seen[0][0] < now - span:
-        seen.popleft()
-    if not seen or now - seen[0][0] < 0.8 * span:
+    A mean rather than every-sample-over, so one low reading cannot reset a trip.
+    Read-only, because several windows share one queue."""
+    recent = [(at, v) for at, v in seen if at >= now - span]
+    if not recent or now - recent[0][0] < 0.8 * span:
         return None
-    return sum(v for _, v in seen) / len(seen)
+    return sum(v for _, v in recent) / len(recent)
 
 
 class Servo2040:
@@ -263,6 +269,8 @@ class Servo2040:
                 self._amps_seen.append((t.updated_at, t.amps))
             if t.volts is not None:
                 self._volts_seen.append((t.updated_at, t.volts))
+        _prune(self._amps_seen, now, max(s.current_cut_s, s.still_s))
+        _prune(self._volts_seen, now, s.volts_cut_s)
         # A reading from before torque came on does not use up the grace period.
         if now - max(t.updated_at, self._torque_on_since) > STALE_TELEMETRY_S:
             since = f"{now - t.updated_at:.1f} s" if t.updated_at else "ever"
