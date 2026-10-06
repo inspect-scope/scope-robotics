@@ -160,34 +160,41 @@ def test_stream_over_a_real_socket_is_multipart(tmp_path):
         _teardown(board, controller, state)
 
 
-def test_serve_exits_on_sigint_with_a_stream_open():
+@pytest.mark.parametrize("scheme, flags", [("https", []), ("http", ["--no-tls"])])
+def test_serve_exits_on_sigint_with_a_stream_open(tmp_path, scheme, flags):
     """systemd stops the service with SIGINT and kills it 10 s later. An open
     MJPEG stream used to hold the server past that, so board.close() and its
     torque-off never ran."""
+    import shutil
     import signal
     import socket
+    import ssl
     import subprocess
     import sys
 
+    if scheme == "https" and shutil.which("openssl") is None:
+        pytest.skip("openssl not installed")
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     server = subprocess.Popen(
-        [sys.executable, "-m", "hexapod", "--dry-run", "serve", "--host", "127.0.0.1", "--port", str(port)],
+        [sys.executable, "-m", "hexapod", "--dry-run", "serve", "--host", "127.0.0.1", "--port", str(port), *flags],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(tmp_path)},  # the self-signed cert lands here, not in the real home
     )
+    context = ssl._create_unverified_context() if scheme == "https" else None
     try:
-        base = f"http://127.0.0.1:{port}"
+        base = f"{scheme}://127.0.0.1:{port}"
 
         def up():
             try:
-                urllib.request.urlopen(f"{base}/api/state", timeout=0.5)
+                urllib.request.urlopen(f"{base}/api/state", timeout=0.5, context=context)
                 return True
             except OSError:
                 return False
 
-        assert _wait_for(up, seconds=10)
-        stream = urllib.request.urlopen(f"{base}/stream", timeout=10)
+        assert _wait_for(up, seconds=15)
+        stream = urllib.request.urlopen(f"{base}/stream", timeout=10, context=context)
         assert stream.read1(1000)
         started = time.monotonic()
         server.send_signal(signal.SIGINT)
