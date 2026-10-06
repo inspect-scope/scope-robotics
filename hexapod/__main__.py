@@ -18,6 +18,8 @@ from .kinematics import BodyPose, HexapodKinematics
 from .net import interface_addresses, is_tunnel
 
 SHUTDOWN_GRACE_S = 2.0  # seconds open connections get on stop, well inside systemd's 10 s
+SCHEME_HTTP = "http"
+SCHEME_HTTPS = "https"
 
 
 def _board(config: Config, args: argparse.Namespace) -> Servo2040:
@@ -309,12 +311,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     else:
         hand_note = "on, browser camera"
     print(f"  imu {imu_note}; camera {camera_note}; hand {hand_note}")
-    _print_urls(args.port)
+    tls = None if args.no_tls else _tls_files()
+    _print_urls(args.port, SCHEME_HTTP if tls is None else SCHEME_HTTPS)
+    if tls is not None:
+        print("  first visit: accept the self-signed cert. laptop camera needs https.", flush=True)
     try:
         # An open MJPEG stream never finishes. Without a limit uvicorn waits on it
         # forever, systemd kills the process, and board.close() below never runs.
+        extra = {} if tls is None else {"ssl_certfile": str(tls[0]), "ssl_keyfile": str(tls[1])}
         uvicorn.run(app, host=args.host, port=args.port, log_level="warning", ws_ping_interval=5,
-                    timeout_graceful_shutdown=SHUTDOWN_GRACE_S)
+                    timeout_graceful_shutdown=SHUTDOWN_GRACE_S, **extra)
     finally:
         state.stop()
         controller.stop()
@@ -322,15 +328,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
-def _print_urls(port: int) -> None:
+def _tls_files():
+    from .tls import ensure_pair
+
+    return ensure_pair()
+
+
+def _print_urls(port: int, scheme: str = SCHEME_HTTP) -> None:
     """List every address the pages are reachable at, best guess first."""
     addresses = interface_addresses()
     if not addresses:
-        print(f"\n  hexapod control on http://localhost:{port}  (status panel at /status)\n", flush=True)
+        print(f"\n  hexapod control on {scheme}://localhost:{port}  (status panel at /status)\n", flush=True)
         return
-    rows = [(f"http://{address}:{port}", name, "VPN or virtual, probably not your LAN" if is_tunnel(name) else "")
+    rows = [(f"{scheme}://{address}:{port}", name, "VPN or virtual, probably not your LAN" if is_tunnel(name) else "")
             for name, address in addresses]
-    rows.append((f"http://localhost:{port}", "", "this machine only"))
+    rows.append((f"{scheme}://localhost:{port}", "", "this machine only"))
     width = max(len(url) for url, _, _ in rows)
     print("\n  hexapod control on:")
     for url, name, note in rows:
@@ -367,6 +379,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     serve.add_argument("--webcam", action="store_true", help="also open a USB webcam for /hand/stream")
     serve.add_argument("--webcam-index", type=int, default=0, help="OpenCV camera index (default 0)")
     serve.add_argument("--no-hand", action="store_true", help="do not open the hand-follow modal")
+    serve.add_argument("--no-tls", action="store_true", help="plain HTTP. laptop camera then only works on localhost")
     serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)

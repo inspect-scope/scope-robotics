@@ -49,8 +49,11 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 `serve` opens a laptop-camera Hand modal. Lean maps the palm onto chassis pose.
 Pincer maps index and middle onto L1/R1. Toggle in the modal. The robot live
 view stays the robot camera. Pose stays inside the operator limits and does
-not change ride height. `--no-hand` turns the modal off. Fetch the MediaPipe
-wasm and landmarker once (`tools/fetch-hand-assets.sh`); they are gitignored.
+not change ride height. `--no-hand` turns the modal off. The laptop camera
+needs https (http only works on localhost), so `serve` mints a self-signed
+cert. Accept the browser warning once. `--no-tls` is plain HTTP. Fetch the
+MediaPipe wasm and landmarker once (`tools/fetch-hand-assets.sh`); they are
+gitignored.
 
 ```sh
 tools/fetch-hand-assets.sh
@@ -271,7 +274,7 @@ really at the front.
 **Or let the board tell you which headers have a live servo.** No eyes needed:
 
 ```sh
-P=$(curl -s localhost:8000/api/state | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["pulses"]))')
+P=$(curl -k -s https://localhost:8000/api/state | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["pulses"]))')
 sudo systemctl stop hexapod
 python3 tools/poke.py /dev/ttyACM0 --probe --base "$P"
 ```
@@ -458,7 +461,7 @@ The page has both layouts. Landscape puts the readings on the left and the
 horizon on the right; portrait stacks them. It switches on the media query, so
 the dry run in a browser window works either way.
 
-The panel is Chromium in kiosk mode pointed at `http://localhost:8000/status`.
+The panel is Chromium in kiosk mode pointed at `https://localhost:8000/status`.
 Same server, same stack, nothing else to maintain; see Deploy.
 
 ## Camera

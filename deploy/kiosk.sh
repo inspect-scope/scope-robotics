@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Show /status full screen on the panel. Waits for the display and the server first.
 #
-#   HEXAPOD_STATUS_URL=http://localhost:8000/status deploy/kiosk.sh
+#   HEXAPOD_STATUS_URL=https://localhost:8000/status deploy/kiosk.sh
 #   HEXAPOD_PANEL_TRANSFORM=270 deploy/kiosk.sh   # panel mounted the other way up
 #
 # Runs as the desktop user. Works from a systemd user unit or from the
 # compositor's autostart file; it finds the Wayland socket or X display itself.
 set -u
 
-URL="${HEXAPOD_STATUS_URL:-http://localhost:8000/status}"
+URL="${HEXAPOD_STATUS_URL:-https://localhost:8000/status}"
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 
 # Wait for a display. Bookworm runs labwc or wayfire on Wayland; older images use X.
@@ -30,7 +30,7 @@ if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wlr-randr >/dev/null; then
 fi
 
 # Wait for the server; the kiosk is useless before it.
-until curl -fs -o /dev/null "$URL"; do sleep 1; done
+until curl -kfs -o /dev/null "$URL"; do sleep 1; done
 
 BROWSER="$(command -v chromium-browser || command -v chromium || true)"
 if [ -z "$BROWSER" ]; then
@@ -43,6 +43,7 @@ fi
 # the whole window by 480/500 lands it exactly on the screen.
 exec "$BROWSER" \
   --kiosk "$URL" \
+  --ignore-certificate-errors \
   --noerrdialogs --disable-infobars --no-first-run --incognito \
   --password-store=basic \
   --disable-session-crashed-bubble --disable-features=TranslateUI \

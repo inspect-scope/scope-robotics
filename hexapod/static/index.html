@@ -558,6 +558,10 @@ async function openHand() {
   if (handStream) return;
   handOpen = true;
   try {
+    if (!window.isSecureContext) {
+      $("hand-readout").textContent = "camera needs https (blocked on http except localhost)";
+      return;
+    }
     handStream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "user", width: 640, height: 480 }, audio: false,
     });

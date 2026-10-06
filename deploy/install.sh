@@ -35,6 +35,6 @@ sudo loginctl enable-linger "$USER_NAME"
 echo "hexapod-kiosk.service: $(systemctl --user is-active hexapod-kiosk.service || true)"
 
 echo
-echo "status page:  http://localhost:8000/status"
+echo "status page:  https://localhost:8000/status"
 echo "logs:         journalctl -u hexapod -f"
 echo "kiosk logs:   journalctl --user -u hexapod-kiosk -f"

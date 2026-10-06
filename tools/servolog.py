@@ -24,6 +24,7 @@ from the Pi or from a laptop on the same network.
 import argparse
 import csv
 import json
+import ssl
 import sys
 import time
 import urllib.error
@@ -36,7 +37,8 @@ QUIET_GAP_S = 0.5  # no change for this long ends a block
 
 
 def fetch(url: str, timeout: float = 1.0):
-    with urllib.request.urlopen(url, timeout=timeout) as response:
+    ctx = ssl._create_unverified_context() if url.startswith("https:") else None
+    with urllib.request.urlopen(url, timeout=timeout, context=ctx) as response:
         return json.load(response)
 
 
@@ -151,7 +153,7 @@ def main() -> int:
     parser.add_argument("--csv", help="also write every sample here")
     parser.add_argument("--quiet", action="store_true", help="no live lines, only the summary")
     args = parser.parse_args()
-    base = f"http://{args.host}:{args.port}"
+    base = f"https://{args.host}:{args.port}"
 
     try:
         config = fetch(f"{base}/api/config")
