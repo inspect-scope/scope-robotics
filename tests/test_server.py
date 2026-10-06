@@ -160,6 +160,46 @@ def test_stream_over_a_real_socket_is_multipart(tmp_path):
         _teardown(board, controller, state)
 
 
+def test_serve_exits_on_sigint_with_a_stream_open():
+    """systemd stops the service with SIGINT and kills it 10 s later. An open
+    MJPEG stream used to hold the server past that, so board.close() and its
+    torque-off never ran."""
+    import signal
+    import socket
+    import subprocess
+    import sys
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    server = subprocess.Popen(
+        [sys.executable, "-m", "hexapod", "--dry-run", "serve", "--host", "127.0.0.1", "--port", str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    try:
+        base = f"http://127.0.0.1:{port}"
+
+        def up():
+            try:
+                urllib.request.urlopen(f"{base}/api/state", timeout=0.5)
+                return True
+            except OSError:
+                return False
+
+        assert _wait_for(up, seconds=10)
+        stream = urllib.request.urlopen(f"{base}/stream", timeout=10)
+        assert stream.read1(1000)
+        started = time.monotonic()
+        server.send_signal(signal.SIGINT)
+        server.wait(timeout=8)
+        assert time.monotonic() - started < 6.0
+        stream.close()
+    finally:
+        if server.poll() is None:
+            server.kill()
+            server.wait()
+
+
 def test_telemetry_socket_only_pushes(client):
     with client.websocket_connect("/telemetry") as socket:
         message = socket.receive_json()

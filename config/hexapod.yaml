@@ -44,9 +44,9 @@ limits:
   # 500-2500us; narrow this if yours buzz or stall at the ends.
   pulse_us: [600, 2400]
   # Joint limits, chosen to sit just inside what pulse_us can actually reach so
-  # the two clamps agree. `hexapod check` flags them if they drift apart. With
-  # tibia_attach_angle 134 they do: the pulse clamp stops the knee at about 53,
-  # so the 30 below is unreachable until the tibia horns are refitted at 68.
+  # the two clamps agree. `hexapod check` flags them if they drift apart. Not yet
+  # measured against the frame: replace them with the hand-measured stops, less a
+  # margin, once the legs are rebuilt.
   coxa_deg: [-50, 50]
   femur_deg: [-35, 115]
   tibia_deg: [30, 148]
@@ -58,14 +58,18 @@ geometry:
   tibia_len: 134
   # Where the legs meet the frame, relative to the body origin (LEG_CONNECTION_Z).
   leg_connection_z: -10
-  # Angle between servo horn and leg segment with the servo centred, degrees.
-  coxa_attach_angle: -8
+  # Joint angle with the servo centred (1500 us), degrees. One value covers all
+  # six legs. Fitting pose: docs/servo-fitting.svg.
+  # Coxa 0: leg straight out along its mount line. Chica's -8 turns every leg 8 deg
+  # clockwise seen from above, which is backward on the right and forward on the
+  # left, because the coxa angle is not mirrored here. 0 is the same on both sides.
+  coxa_attach_angle: 0
+  # Thigh 35 deg above horizontal.
   femur_attach_angle: 35
-  # Chica's value is 68. The tibia horns on this build sit with the knee folded
-  # to about the sit angle, estimated (+-5 deg) from photos of two legs at 1500 us
-  # on 26 Sep 2026; refine with a protractor on the knee at centre. Refitting the horns at 68 would give
-  # the leg back its straight-knee range; until then it cannot reach below ~53.
-  tibia_attach_angle: 134
+  # Knee folded 68 deg from straight, 112 deg inside angle (Chica's value). Was 134
+  # until the 5 Oct 2026 refit. At 68 the pulse clamp alone keeps the knee within
+  # -13..149 deg of fold; at 134 it allowed 215, through the thigh.
+  tibia_attach_angle: 68
 
 stance:
   ride_height: 80          # body origin above the feet when standing, mm
@@ -100,8 +104,8 @@ tripod_groups: [[L1, R2, L3], [R1, L2, R3]]
 # Left and right legs are mirror images, so the same shaft rotation moves them
 # opposite ways; one side has to run at -1. On this build it is probably the
 # RIGHT side (inferred 26 Sep 2026 from photos of the sit pose, not yet
-# confirmed). Check with `hexapod jog`, which opens at the sit pose: `R2 -8 35
-# 134` to centre, then `R2 -8 60 134` must lift the thigh. If it drops, right
+# confirmed). Check with `hexapod jog`, which opens at the sit pose: `R2 0 35
+# 68` to centre, then `R2 0 60 68` must lift the thigh. If it drops, right
 # is 1 and left is -1. Chica's own config has no direction field because its app applied
 # the mirror from the L/R in the servo name; this port has to say it here.
 # Flipping direction does not move the 1500 us centre, so horn calibration

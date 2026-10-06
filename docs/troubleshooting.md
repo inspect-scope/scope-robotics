@@ -617,6 +617,41 @@ A Mac port negotiates 1.5 A or 3 A, not the 5 A the Pi 5 wants.
 which assumes a supply that can deliver. Fine for bench work with little
 attached; use the official 27 W supply or the UBEC for anything real.
 
+### Relay never opens: servo rail live with torque off
+
+Found 5 to 6 Oct 2026, servos unplugged. Every e-stop and current trip ends in
+"torque off", which is supposed to open this relay. It never opened.
+
+| check | result |
+|---|---|
+| board's rail reading, torque off / on / off | 7.75 / 7.75 / 7.75 V (poke-style GET), then 7.72 V through the server |
+| meter on the Servo2040 power terminals, same toggle | 7.79 V every time |
+| thick wire on the Servo2040 `+` | goes to the relay's NO terminal: output side correct |
+| relay module VCC to GND | 5.15 V: control side powered correctly |
+| A0 (purple) to GND, torque off / on | 0.22 V / 3.3 V: board and firmware drive it correctly |
+| relay module LEDs while toggling | both on, never change |
+
+The module is held on in both states. Every reading fits a low-level trigger
+module (not yet confirmed from its markings): a low input (0.22 V, "torque
+off") switches it on, and the RP2040's 3.3 V high is not high enough to switch
+a 5 V low-trigger module off. So the relay was on all the
+time, including while the Servo2040 boots, when A0 sits low. Torque off only
+stopped the servo PWM. Whether an FT5330M goes limp or holds without PWM is not
+measured.
+
+The 0.06 V readings on 29 Sep with torque off were probably taken with the
+servo power switched off; nobody recorded it.
+
+**Fixed 6 Oct 2026.** The module has an H/L trigger jumper, and it was on L.
+On H, a high input switches it on and 3.3 V is enough. `poke.py --probe` then
+read the rail at 0.08 V before torque on, 7.63 V with torque on, and 0.08 V
+after it exited with torque off. Check the jumper on any replacement module:
+it must be on H.
+
+Still open: the contacts are rated 7 A resistive at 28 VDC
+(SRD-05VDC-SL-C) and the walking current is not measured. A module rated well
+above 10 A DC, high trigger, 3.3 V input, would remove that limit.
+
 ---
 
 ## Servos
@@ -661,6 +696,11 @@ map still needs the census, but no other header is dead.
 Note for the probe numbers: an unloaded FT5330M pulls far more than expected
 when it starts, 3 A peaks are normal, so the threshold for "moved" is set low
 (0.15 A) and anything under it is a real absence, not a quiet servo.
+
+That threshold later proved too low the other way. On 6 Oct 2026, with the
+idle reading at exactly 0.00 A, two empty headers read +0.16 A, two ADC
+counts, and were called "servo moved". "Moved" now needs 0.5 A over idle;
+0.15 to 0.5 A reads WEAK. The quietest healthy servo that day rose 0.90 A.
 
 ### Left and right legs do opposite things on Sit and Stand
 
@@ -843,11 +883,17 @@ arc sits relative to the printed arm.
 1. Command centre (`poke.py --centre`)
 2. **Don't touch the servo**
 3. Fit the arm at that joint's `geometry.*_attach_angle` in
-   `config/hexapod.yaml`, not at a sit or stand pose. On this build: coxa -8
-   (leg 8 deg back from its mount line), femur 35 (thigh 35 deg above
-   horizontal), tibia 134 (knee folded 134 deg, a 46 deg interior angle). One
-   value covers all six legs, so a single replacement must match it. To fit at
-   a different angle, refit every leg and change the config to match.
+   `config/hexapod.yaml`, not at a sit or stand pose. Since the 5 Oct 2026
+   refit: coxa 0 (leg straight out along its mount line), femur 35 (thigh 35
+   deg above horizontal), tibia 68 (knee folded 68 deg, a 112 deg inside
+   angle), drawn in [servo-fitting.svg](servo-fitting.svg). One value covers
+   all six legs, so a single replacement must match it. To fit at a different
+   angle, refit every leg and change the config to match.
+
+   The coxa used to be -8, Chica's value. The coxa angle is not mirrored here,
+   so -8 turned every leg 8 deg clockwise seen from above: back on the right,
+   forward on the left. Fitting all six "8 deg back" would have left the left
+   coxas 16 deg off.
 4. Screw it down
 
 Fit the horn while the servo is anywhere but centre and the arm runs out of

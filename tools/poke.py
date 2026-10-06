@@ -239,18 +239,22 @@ STALL_SPEC_A = 3.9      # FT5330M locked-rotor current at 7.4 V, per its spec sh
 HIGH_A = STALL_SPEC_A * 1.15   # a peak well above the stall spec suggests a bind or damage.
 # Set for the FT5330M: a healthy DS3235 PRO peaks up to 4.4 A, close to this line.
 STALLED_EXCESS_A = 0.8  # still pulling this much over idle a second after the move
+NOISE_A = 0.15  # one ADC count is 0.08 A; under two counts is noise
+MOVED_A = 0.5   # healthy servos rise 0.9 A or more; two counts over a zero idle is not a move
 
 
 def verdict(delta_amps, settled_excess=0.0):
     """What the current while one header is driven means. `delta_amps` is the
     peak rise over idle during the move; `settled_excess` is the rise still
     present a second after it should have finished."""
-    if delta_amps < 0.15:  # one ADC count is 0.08 A; anything under two counts is noise
+    if delta_amps < NOISE_A:
         return "NOTHING drew current"
     if settled_excess >= STALLED_EXCESS_A:
         return "STILL PULLING: stalled or bound"
     if delta_amps >= HIGH_A:
         return "HIGH: above stall spec, bind or damage"
+    if delta_amps < MOVED_A:
+        return "WEAK: barely drew current"
     return "servo moved"
 
 
@@ -258,11 +262,11 @@ def fleet_outliers(peaks, factor=1.4):
     """Channels whose peak is well above the pack. Catches a servo that is
     'within spec' but 40% hungrier than its 17 siblings, which is how the
     L1 femur read on all five probes one afternoon before it died."""
-    live = sorted(v for v in peaks.values() if v > 0.15)
+    live = sorted(v for v in peaks.values() if v >= MOVED_A)
     if len(live) < 4:
         return []
     median = live[len(live) // 2]
-    return sorted(ch for ch, v in peaks.items() if v >= median * factor and v > 0.15)
+    return sorted(ch for ch, v in peaks.items() if v >= median * factor and v >= MOVED_A)
 
 
 def _telemetry(port):
@@ -303,7 +307,7 @@ def _sample(port, seconds, tail=0.0, watch=None):
 
 def probe(port, base, sweep):
     frame = list(base)
-    quiet, bad, peaks = [], [], {}
+    quiet, weak, bad, peaks = [], [], [], {}
     ch = None
     watch = CurrentWatch()
     done = tripped = False
@@ -316,8 +320,8 @@ def probe(port, base, sweep):
         time.sleep(0.8)
         touch, amps, volts = _telemetry(port)
         print(f"battery {volts:.2f} V   idle {amps:+.2f} A   touch pins " + " ".join(f"{v:.2f}" for v in touch))
-        print(f"A servo that moves peaks 0.15 A or more over idle; healthy FT5330Ms have read 1.3 to 3.7 A and"
-              f" settle within a second. Stall spec {STALL_SPEC_A} A.")
+        print(f"A servo that moves peaks {MOVED_A} A or more over idle; healthy FT5330Ms have read 0.9 to 3.7 A"
+              f" and settle within a second. Stall spec {STALL_SPEC_A} A.")
         idle_peak, count, closed, idle_mean = _sample(port, 1.5, tail=1.0, watch=watch)
         print(f"idle peak {idle_peak:+.2f} A, mean {idle_mean:+.2f} A over {count} samples; foot switches closed: "
               f"{sorted(TOUCH_LEG[i] for i in closed) or 'none'}")
@@ -345,6 +349,8 @@ def probe(port, base, sweep):
             peaks[ch] = delta
             if what.startswith("NOTHING"):
                 quiet.append(ch)
+            elif what.startswith("WEAK"):
+                weak.append(ch)
             elif what.startswith(("HIGH", "STILL")):
                 bad.append(ch)
             print(f"SERVO {ch + 1:>2} {ch:>3} {frame[ch]:>8} {peak:>+7.2f} {delta:>+6.2f} {excess:>+8.2f}  {what:<32} "
@@ -371,6 +377,9 @@ def probe(port, base, sweep):
     if quiet:
         print("no servo answered on: " + ", ".join(f"SERVO {c + 1}" for c in quiet)
               + ". Swap that plug with a neighbour to tell a dead servo from a dead header.")
+    if weak:
+        print("barely drew current: " + ", ".join(f"SERVO {c + 1}" for c in weak)
+              + ". A working servo rises 0.9 A or more. Check the plug, then swap it with a neighbour.")
     hungry = [c for c in fleet_outliers(peaks) if c not in bad]
     if bad:
         print("bound or damaged: " + ", ".join(f"SERVO {c + 1}" for c in bad)
@@ -380,7 +389,7 @@ def probe(port, base, sweep):
               + ". Watch them: re-run after a session and compare.")
     if not done:
         print("run incomplete: the lists above cover only the headers that finished.")
-    elif not quiet and not bad and not hungry:
+    elif not quiet and not weak and not bad and not hungry:
         print("all 18 answered, none high, none still pulling.")
     return 0 if done else 1
 

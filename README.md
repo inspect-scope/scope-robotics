@@ -136,11 +136,14 @@ python3 tools/poke.py /dev/ttyACM0 --centre
 
 Every servo goes to 1500 us. This is your mechanical zero, and it is the pose
 the horns must be fitted in, each joint at its `geometry.*_attach_angle`.
-Chica's fit is thigh **35° above horizontal**, knee **folded 68° from
-straight** (112° interior, a fairly open knee), leg 8° back from its mount
-line, and it keeps the full knee range. This build's tibia horns sit at about
-134° fold (46° interior), so `tibia_attach_angle` is 134 to match; if you
-refit them at 68, set it back to 68 in the same change. All six identical, and
+The fitting pose is drawn in
+[docs/servo-fitting.svg](docs/servo-fitting.svg), with every servo's number:
+leg **straight out along its mount line** (coxa 0), thigh **35° above
+horizontal**, knee **folded 68° from straight** (112° inside angle, a fairly
+open knee). Chica's coxa value is -8, but the coxa angle is not mirrored here,
+so -8 would turn the right legs back and the left legs forward; 0 is the same
+on both sides. Refitted this way on 5 Oct 2026; the tibias were at 134° fold
+before. All six identical, and
 one value covers all six legs, so a replacement servo must match it. Do not fit
 the arms in a pose that "looks like standing" or "looks like sitting". The
 attach angles must describe the pose you actually fitted; check `hexapod check`
@@ -154,8 +157,8 @@ hexapod jog
 
 Two checks per leg:
 
-- `L1 -8 35 134` (the three `geometry.*_attach_angle` values; use whatever the config says) must put all three servos back at 1500 us. Jog opens at the sit pose, so this is also how you centre a leg.
-- `L1 0 0 0` must point the leg straight out sideways, horizontal, with the knee as open as the pulse clamp allows: straight with a tibia attach angle of 68, about 53° fold at 134.
+- `L1 0 35 68` (the three `geometry.*_attach_angle` values; use whatever the config says) must put all three servos back at 1500 us. Jog opens at the sit pose, so this is also how you centre a leg.
+- `L1 0 0 30` must point the leg straight out sideways, thigh horizontal, knee nearly straight (30° fold is the joint limit).
 
 If a joint moves the wrong way, flip `direction` from `1` to `-1` for that servo in the config. If a joint is centred but at the wrong angle, correct its attach angle.
 
@@ -236,7 +239,8 @@ settled to a second later, then a summary. Read it like this:
 
 | reading | means | do |
 |---|---|---|
-| peak 0.15 A or more over idle, settles to idle | moved; healthy FT5330Ms have read 1.3 to 3.7 A | nothing |
+| peak 0.5 A or more over idle, settles to idle | moved; healthy FT5330Ms have read 0.9 to 3.7 A | nothing |
+| peak 0.15 to 0.5 A over idle | **weak**: two or three ADC counts, not a real move | check the plug, then swap it with a neighbour |
 | peak under 0.15 A over idle | **dead**, or unplugged, or lead broken | swap its plug with a neighbour: fault follows the plug = servo or lead |
 | peak over 4.5 A (above the FT5330M's 3.9 A stall spec) | **suspect**: an external bind, or internal damage | torque off, turn the joint by hand: a catch is a bind to fix first; free, suspect the servo |
 | still pulling 0.8 A+ a second after the move | **stalled or bound** | something is in the way, find it before it cooks |

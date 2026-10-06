@@ -60,7 +60,9 @@ def test_census_reports_gaps_and_duplicates(poke):
 
 @pytest.mark.parametrize("delta, settled, expected", [
     (3.1, 0.0, "servo moved"),
-    (0.15, 0.0, "servo moved"),
+    (0.9, 0.0, "servo moved"),                             # the quietest healthy servo, 6 Oct
+    (0.5, 0.0, "servo moved"),
+    (0.16, 0.0, "WEAK: barely drew current"),              # two ADC counts over a zero idle, empty header
     (0.1, 0.0, "NOTHING drew current"),                   # one ADC count (0.08 A) is noise
     (0.0, 0.0, "NOTHING drew current"),
     (5.0, 0.0, "HIGH: above stall spec, bind or damage"),        # the L1 femur, the day it died

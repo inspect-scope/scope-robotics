@@ -17,7 +17,12 @@ ExecStart=@REPO@/.venv/bin/hexapod serve --host 0.0.0.0 --port 8000
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
-# Servo torque drops on exit (the board watchdog sees no frames), so a plain kill is safe.
+# Latch the e-stop first: the relay opens before anything else happens. The
+# leading - lets the stop go ahead when the server is already down.
+ExecStop=-/usr/bin/curl -fsS -m 2 -X POST http://127.0.0.1:8000/stop
+# Then SIGINT. The server gives open connections 2 s and runs board.close(),
+# which sends torque off again. A SIGKILL at 10 s skips all of that and leaves
+# the relay as it was, because the watchdog lives in this process.
 KillSignal=SIGINT
 TimeoutStopSec=10
 

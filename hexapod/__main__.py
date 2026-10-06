@@ -17,6 +17,8 @@ from .gait import TripodGait, Velocity
 from .kinematics import BodyPose, HexapodKinematics
 from .net import interface_addresses, is_tunnel
 
+SHUTDOWN_GRACE_S = 2.0  # seconds open connections get on stop, well inside systemd's 10 s
+
 
 def _board(config: Config, args: argparse.Namespace) -> Servo2040:
     cls = FakeBoard if args.dry_run else Servo2040
@@ -309,7 +311,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  imu {imu_note}; camera {camera_note}; hand {hand_note}")
     _print_urls(args.port)
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="warning", ws_ping_interval=5)
+        # An open MJPEG stream never finishes. Without a limit uvicorn waits on it
+        # forever, systemd kills the process, and board.close() below never runs.
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning", ws_ping_interval=5,
+                    timeout_graceful_shutdown=SHUTDOWN_GRACE_S)
     finally:
         state.stop()
         controller.stop()
