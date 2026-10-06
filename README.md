@@ -46,16 +46,16 @@ python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/hexapod --dry-run serve
 ```
 
-`--hand` opens a laptop-camera modal. Lean maps the palm onto chassis pose.
+`serve` opens a laptop-camera Hand modal. Lean maps the palm onto chassis pose.
 Pincer maps index and middle onto L1/R1. Toggle in the modal. The robot live
 view stays the robot camera. Pose stays inside the operator limits and does
-not change ride height. Fetch the MediaPipe wasm and landmarker once
-(`tools/fetch-hand-assets.sh`); they are gitignored.
+not change ride height. `--no-hand` turns the modal off. Fetch the MediaPipe
+wasm and landmarker once (`tools/fetch-hand-assets.sh`); they are gitignored.
 
 ```sh
 tools/fetch-hand-assets.sh
 .venv/bin/pip install -e '.[dev]'
-.venv/bin/hexapod --dry-run serve --hand
+.venv/bin/hexapod --dry-run serve
 ```
 
 Open the URL it prints. `/` is the client, `/status` is the panel page. The
@@ -589,7 +589,7 @@ The stance block is ours, not a copy of Chica's `MODE_STANDARD`. It puts every f
 | [hexapod/imu.py](hexapod/imu.py) | MPU-6050 over i2c. Bias calibration, pitch and roll. `FakeImu` for dry runs. |
 | [hexapod/camera.py](hexapod/camera.py) | Owns `Picamera2`. Live stream and stills. `FakeCamera` for dry runs. |
 | [hexapod/webcam.py](hexapod/webcam.py) | Optional USB cam for `/hand/stream`. `--webcam`. |
-| [hexapod/hand.py](hexapod/hand.py) | MediaPipe Hands → `POSE_LIMITS`. `--hand`. |
+| [hexapod/hand.py](hexapod/hand.py) | MediaPipe Hands → `POSE_LIMITS`. on with `serve`; `--no-hand` off. |
 | [hexapod/state.py](hexapod/state.py) | Polls the IMU at 10 Hz and merges board, gait, IMU, camera and network into one snapshot. |
 | [hexapod/net.py](hexapod/net.py) | Which addresses the server is reachable at. |
 | [hexapod/server.py](hexapod/server.py) | HTTP, MJPEG and WebSockets. |

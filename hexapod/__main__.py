@@ -283,7 +283,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if config.camera.enabled and not args.no_camera:
         camera = (FakeCamera if args.dry_run else Camera)(config.camera)
     state = RobotState(config, controller, imu=imu, camera=camera)
-    if args.hand:
+    if not args.no_hand:
         from .hand import HandFollower
         from .webcam import WebcamCamera
 
@@ -366,7 +366,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     serve.add_argument("--no-imu", action="store_true", help="do not open the IMU")
     serve.add_argument("--webcam", action="store_true", help="also open a USB webcam for /hand/stream")
     serve.add_argument("--webcam-index", type=int, default=0, help="OpenCV camera index (default 0)")
-    serve.add_argument("--hand", action="store_true", help="preview: hand-follow modal (MediaPipe Hands)")
+    serve.add_argument("--no-hand", action="store_true", help="do not open the hand-follow modal")
     serve.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)
