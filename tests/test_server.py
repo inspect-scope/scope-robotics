@@ -392,6 +392,30 @@ def test_state_reports_joint_angles_and_the_pulse_frame(client):
         assert body["pulses"][femur_channel] != before[femur_channel]
 
 
+def test_config_says_which_screen_edge_faces_the_front(client):
+    """The status page lays the foot-switch frame out from this and the coxae."""
+    cfg = client.get("/api/config").json()
+    assert cfg["panel"] == {"front": "right"}
+    assert set(cfg["coxae"]) == {"R1", "R2", "R3", "L1", "L2", "L3"}
+
+
+def test_panel_front_must_be_a_screen_edge(tmp_path):
+    import yaml
+
+    raw = yaml.safe_load(open(config_mod.DEFAULT_CONFIG))
+    path = tmp_path / "hexapod.yaml"
+    raw["panel"] = {"front": "Bottom "}
+    path.write_text(yaml.safe_dump(raw))
+    assert config_mod.load(str(path)).panel.front == "bottom"
+    raw["panel"] = {"front": "up"}
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(ValueError, match="panel.front"):
+        config_mod.load(str(path))
+    del raw["panel"]
+    path.write_text(yaml.safe_dump(raw))
+    assert config_mod.load(str(path)).panel.front == "top"
+
+
 def test_config_names_every_channel_once(client):
     cfg = client.get("/api/config").json()
     channels = [s["channel"] for joints in cfg["servos"].values() for s in joints.values()]

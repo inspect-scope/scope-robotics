@@ -449,6 +449,13 @@ artificial horizon from the IMU, the robot's state, and a STOP button. No other
 controls. STOP posts to `/stop`, which latches e-stop; clear it from the client
 page.
 
+A frame round the screen edge shows the six foot switches. Each leg owns the
+stretch of edge on its side of the robot, green while its switch is closed,
+grey when open, dashed while there is no data. `panel.front` in
+[config/hexapod.yaml](config/hexapod.yaml) says which screen edge faces the
+robot's front; on this robot it is `right`, so L1 to L3 run along the top and
+R1 to R3 along the bottom.
+
 The screen is a 320x480 ST7796S over SPI, mounted on its side, so the page runs
 at 480x320. [deploy/kiosk.sh](deploy/kiosk.sh) rotates the output with
 `wlr-randr --transform 90` before it starts Chromium, because Chromium sizes

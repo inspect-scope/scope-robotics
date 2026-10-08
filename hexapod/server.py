@@ -161,6 +161,7 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                 "camera": {"enabled": state.camera is not None, "lores": list(config.camera.lores),
                            "still": list(config.camera.still)},
                 "hand": state.hand is not None,
+                "panel": {"front": config.panel.front},
             }
         )
 

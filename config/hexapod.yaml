@@ -165,3 +165,9 @@ camera:
   buffers: 2               # full-res frames in flight; each is ~35 MB of CMA
   survey_dir: ~/surveys    # stills go in survey_dir/<session timestamp>/
   rotation: 180            # camera is mounted upside down. 0 or 180, nothing else
+
+# The roof screen. `front` is the screen edge nearest the robot's front (camera
+# end) when the screen is read the right way up: top, right, bottom or left. The
+# foot-switch frame on /status puts each leg on its own side of the screen.
+panel:
+  front: right             # so L1..L3 run along the top edge, R1..R3 along the bottom

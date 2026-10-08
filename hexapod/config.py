@@ -132,6 +132,17 @@ class SafetyConfig:
     volts_cut_s: float = 2.0
 
 
+PANEL_EDGES = ("top", "right", "bottom", "left")
+
+
+@dataclass(frozen=True)
+class PanelConfig:
+    """The roof screen. `front` is the screen edge nearest the robot's front
+    (camera end) when the screen is read the right way up, viewed from above."""
+
+    front: str = "top"
+
+
 @dataclass(frozen=True)
 class Config:
     port: str
@@ -151,6 +162,7 @@ class Config:
     imu: ImuConfig = field(default_factory=ImuConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
+    panel: PanelConfig = field(default_factory=PanelConfig)
 
 
 def _axis_map(raw: Any) -> Tuple[str, str, str]:
@@ -227,6 +239,13 @@ def _safety(raw: Dict[str, Any]) -> SafetyConfig:
     return cfg
 
 
+def _panel(raw: Dict[str, Any]) -> PanelConfig:
+    front = str(raw.get("front", PanelConfig.front)).strip().lower()
+    if front not in PANEL_EDGES:
+        raise ValueError(f"panel.front must be one of {', '.join(PANEL_EDGES)}, got {front!r}")
+    return PanelConfig(front=front)
+
+
 def load(path: str = DEFAULT_CONFIG) -> Config:
     with open(path) as handle:
         raw = yaml.safe_load(handle)
@@ -287,4 +306,5 @@ def load(path: str = DEFAULT_CONFIG) -> Config:
         imu=_imu(dict(raw.get("imu") or {})),
         camera=_camera(dict(raw.get("camera") or {})),
         safety=_safety(raw.get("safety") or {}),
+        panel=_panel(dict(raw.get("panel") or {})),
     )
