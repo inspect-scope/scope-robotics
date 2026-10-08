@@ -165,6 +165,15 @@ Two checks per leg:
 
 If a joint moves the wrong way, flip `direction` from `1` to `-1` for that servo in the config. If a joint is centred but at the wrong angle, correct its attach angle.
 
+The hip is the one to get right first, and a big swing reads better than a
+small one: `R2 coxa 45` must point the leg diagonally towards the **camera
+end**, `L2 coxa 45` towards the **rear**. Both sides share the same coxa sign,
+because the hip turns about the vertical axis and the coxa part is the same
+print on all six legs; only femur and tibia mirror. A hip the wrong way round
+does not show at sit or stand. It shows on the floor: a turn command walks
+straight and a forward command turns. See the 8 Oct 2026 entry in
+[docs/troubleshooting.md](docs/troubleshooting.md).
+
 Femur and tibia are easier to read as a sit-to-stand move than as a single
 angle. These are the neutral poses the solver produces at `sit_height` 40 and
 `ride_height` 80, the same for all six legs to within 0.3°:

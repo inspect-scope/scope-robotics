@@ -101,15 +101,18 @@ tripod_groups: [[L1, R2, L3], [R1, L2, R3]]
 # two numbers; 2000/1000 means positive angle -> shorter pulse.
 # `direction` flips the *joint angle* sign before calibration is applied. Set it
 # during bring-up with `hexapod jog`, one joint at a time.
-# Left and right legs are mirror images, so the same shaft rotation moves them
-# opposite ways; one side has to run at -1. On this build it is probably the
-# RIGHT side (inferred 26 Sep 2026 from photos of the sit pose, not yet
-# confirmed). Check with `hexapod jog`, which opens at the sit pose: `R2 0 35
-# 68` to centre, then `R2 0 60 68` must lift the thigh. If it drops, right
-# is 1 and left is -1. Chica's own config has no direction field because its app applied
-# the mirror from the L/R in the servo name; this port has to say it here.
-# Flipping direction does not move the 1500 us centre, so horn calibration
-# survives it.
+# Femur and tibia: the two sides are mirror images in the vertical plane, so the
+# same shaft rotation lifts one side's thigh and drops the other's; the right
+# side runs at -1. Coxa: the hip turns about the vertical axis and the coxa part
+# is the same print on all six legs, so the sign is the SAME on both sides.
+# Confirmed with `hexapod jog` on 8 Oct 2026: with the right coxa at -1, `R2
+# coxa 45` swung the leg to the rear (it must go to the front) and `L2 coxa 45`
+# to the rear (correct). On the floor that made stick east walk forward and a
+# turn command walk straight. Check a hip with `R2 coxa 45` (front) and `L2
+# coxa 45` (rear); a thigh with `R2 0 60 68` (must lift). Chica's own config has
+# no direction field because its app applied the mirror from the L/R in the
+# servo name; this port has to say it here. Flipping direction does not move the
+# 1500 us centre, so horn calibration survives it.
 servos:
   L1: {coxa: {channel: 15, us_neg45: 2000, us_pos45: 1000, direction:  1},
        femur: {channel: 16, us_neg45: 2000, us_pos45: 1000, direction:  1},
@@ -120,13 +123,13 @@ servos:
   L3: {coxa: {channel:  3, us_neg45: 2000, us_pos45: 1000, direction:  1},
        femur: {channel:  4, us_neg45: 2000, us_pos45: 1000, direction:  1},
        tibia: {channel:  5, us_neg45: 2000, us_pos45: 1000, direction:  1}}
-  R1: {coxa: {channel: 12, us_neg45: 2000, us_pos45: 1000, direction: -1},
+  R1: {coxa: {channel: 12, us_neg45: 2000, us_pos45: 1000, direction:  1},
        femur: {channel: 13, us_neg45: 2000, us_pos45: 1000, direction: -1},
        tibia: {channel: 14, us_neg45: 2000, us_pos45: 1000, direction: -1}}
-  R2: {coxa: {channel:  6, us_neg45: 2000, us_pos45: 1000, direction: -1},
+  R2: {coxa: {channel:  6, us_neg45: 2000, us_pos45: 1000, direction:  1},
        femur: {channel:  7, us_neg45: 2000, us_pos45: 1000, direction: -1},
        tibia: {channel:  8, us_neg45: 2000, us_pos45: 1000, direction: -1}}
-  R3: {coxa: {channel:  0, us_neg45: 2000, us_pos45: 1000, direction: -1},
+  R3: {coxa: {channel:  0, us_neg45: 2000, us_pos45: 1000, direction:  1},
        femur: {channel:  1, us_neg45: 2000, us_pos45: 1000, direction: -1},
        tibia: {channel:  2, us_neg45: 2000, us_pos45: 1000, direction: -1}}
 

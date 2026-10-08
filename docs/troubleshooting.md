@@ -763,6 +763,40 @@ out flat gets the flip. Test it on a stand, and only once the horns match their
 attach angles: with a horn far off its attach angle, the wrong choice drives a
 joint into a stop even in the air.
 
+### Stick east walks forward, a diagonal turns the wrong way
+
+8 Oct 2026, first walks on the floor with the car-style left pad. Pushing the
+stick east (spin right on the spot) made the robot walk forward; north walked
+forward curving right; one diagonal turned the wrong way.
+
+The page sent the right numbers (`{vx: 0, vy: 0, yaw: -1}` for east), the
+controller passed them through, and the gait asked the feet for the right
+paths. What differed was the real hip motion. Simulating a wrong servo sign on
+each joint group and summing the pushes of the feet on the ground, only one case
+gave "east walks forward": the three **right coxa** servos turning the opposite
+way to what the config assumed. Right hips inverted means a turn command has
+all six feet stroke the same way (walk) and a forward command has the two sides
+stroke opposite ways (turn).
+
+Confirmed in `hexapod jog`, robot on the stand: `R2 coxa 45` swung the leg to
+the rear (pulse 2000 us) where it must go to the front; `L2 coxa 45` swung to
+the rear (pulse 1000 us), which is correct. Both at the same pulse direction
+gave opposite joint angles, so the right side's `direction: -1` was wrong for
+the coxa.
+
+**Why the mirror argument was wrong for the hip.** Femur and tibia move in the
+leg's vertical plane, and the two sides are mirror images there, so the right
+side runs at -1. The hip turns about the vertical axis, and the coxa part is
+the same print on all six legs, each one rotated round the body; the same shaft
+rotation turns every leg the same way (counter-clockwise seen from above), so
+the coxa sign is the same on both sides. The config had applied the mirror to
+all three joints.
+
+Fix: `direction: 1` on R1, R2 and R3 coxa. The femur and tibia signs on the
+right were left at -1; the robot stood and walked on them, which an inverted
+thigh would not allow. A hip the wrong way round is invisible at sit and stand,
+since the coxa barely moves between the two; it only shows when walking.
+
 ### Torque looks nothing like sit, on both sides equally
 
 With left `-1`, right `+1` (later judged the wrong way round) and centring

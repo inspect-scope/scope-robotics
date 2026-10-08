@@ -156,7 +156,7 @@ def cmd_jog(args: argparse.Namespace) -> int:
                all             back to neutral
                t on | t off    torque
                clear           clear a safety trip, back to sit (then t on)
-    Jog opens at the sit pose. Centre is the attach angles, e.g. L1 -8 35 134.
+    Jog opens at the sit pose. Centre is the attach angles, e.g. L1 0 35 68.
                q               quit
     """
     config = _load(args)
