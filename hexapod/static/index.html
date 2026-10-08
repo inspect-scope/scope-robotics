@@ -305,12 +305,12 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
   <div class="drive" id="drive" tabindex="0" aria-label="Drive controls. Click to capture the keyboard.">
     <div class="pads">
       <div class="pad-wrap">
-        <div class="pad" id="pad-move"><div class="knob"></div></div>
-        <span class="cap">Move &middot; W A S D</span>
+        <div class="pad" id="pad-drive"><div class="knob"></div></div>
+        <span class="cap">Walk &amp; turn &middot; W S Q E</span>
       </div>
       <div class="pad-wrap">
-        <div class="pad wide" id="pad-turn"><div class="knob"></div></div>
-        <span class="cap">Turn &middot; Q E</span>
+        <div class="pad wide" id="pad-crab"><div class="knob"></div></div>
+        <span class="cap">Sideways &middot; A D</span>
       </div>
     </div>
     <span class="hint" id="drive-hint">click to capture keyboard</span>
@@ -392,15 +392,28 @@ function pad(el, onMove, axes) {
   el.addEventListener("pointerup", release);
   el.addEventListener("pointercancel", release);
 }
-pad($("pad-move"), (x, y) => { drive.vx = round2(x); drive.vy = round2(y); });
-pad($("pad-turn"), (x) => { drive.yaw = round2(-x); }, "x"); // stick right = turn right = clockwise
+// Left pad drives like a car: up walks forward, down walks back, sideways turns.
+// The turn is the sideways push cubed, so a diagonal walks on a gentle curve and
+// full sideways spins on the spot. Stick right turns clockwise. Backing up, the
+// turn flips so the path still curves towards the stick, as when reversing a car.
+// The flip fades through zero over the 30 degrees below east and west, so the spin
+// changes direction gradually. The right pad slides sideways without turning.
+const TURN_EXPO = 3;
+const backingScale = (y) => clamp(1 + 4 * Math.min(y, 0), -1, 1);
+const turnFor = (x, y) => -Math.sign(x) * Math.abs(x) ** TURN_EXPO * backingScale(y);
+const stickFor = (yaw, y) => {  // knob position that would give this turn, for the keys
+  const f = backingScale(y);
+  return yaw && f ? clamp(-Math.sign(yaw / f) * Math.abs(yaw / f) ** (1 / TURN_EXPO), -1, 1) : 0;
+};
+pad($("pad-drive"), (x, y) => { drive.vy = round2(y); drive.yaw = round2(turnFor(x, y)); });
+pad($("pad-crab"), (x) => { drive.vx = round2(x); }, "x");
 const round2 = (v) => Math.round(v * 100) / 100;
 
 /* ---------------- keyboard ---------------- */
 // Space and C stay global. WASD/QE only run while the pad block is focused.
 const DRIVE_KEYS = { w: "vy+", s: "vy-", d: "vx+", a: "vx-", q: "yaw+", e: "yaw-" };
 const HINT_IDLE = "click to capture keyboard";
-const HINT_LIVE = "WASD move · QE turn · J J jump · Esc to release";
+const HINT_LIVE = "W S walk · Q E turn · A D sideways · J J jump · Esc to release";
 const held = new Set();
 let keysOwn = false;
 const driveEl = $("drive");
@@ -451,8 +464,8 @@ function applyKeys() {
     axis[name] = sign;
   });
   Object.assign(drive, axis);
-  setKnob($("pad-move"), drive.vx, drive.vy);
-  setKnob($("pad-turn"), -drive.yaw, 0);
+  setKnob($("pad-drive"), stickFor(drive.yaw, drive.vy), drive.vy);
+  setKnob($("pad-crab"), drive.vx, 0);
 }
 
 /* ---------------- buttons ---------------- */

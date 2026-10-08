@@ -432,8 +432,10 @@ panel says so.
 
 - Live view top left, from the camera's low-resolution stream. **Capture** (or `C`) saves a full-resolution still and shows the file name.
 - A 3D commanded-pose view sits next to the top-down stance. orbit / world / follow. drag to look around. green pads are closed foot switches.
-- Left pad moves, right pad turns. Click the pad block to capture the keyboard:
-  `W A S D` moves, `Q E` turns, `Esc` releases. Those keys do nothing until then. `J` twice jumps, same as the button.
+- Left pad walks and turns like a car: up is forward, down is back, sideways
+  turns, and a diagonal walks forward on a gentle curve. Right pad slides
+  sideways without turning. Click the pad block to capture the keyboard:
+  `W S` walk, `Q E` turn, `A D` slide sideways, `Esc` releases. Those keys do nothing until then. `J` twice jumps, same as the button.
 - Space is e-stop from anywhere. So is the red button, and `POST /stop` if the page is wedged.
 - Stand, Sit and Torque are separate. Sit before you cut torque. Jump is two clicks. Bounce loops until off.
 - Gait, tricks and stance-mode dropdowns sit on that row. walks are the Chica set (tripod / triple / ripple / wave). tricks are flex, axis leans, spin (ripple in place) and dance. modes are normal / speed / offroad.
@@ -444,10 +446,12 @@ panel says so.
 ## Status panel
 
 `/status` is built for the screen on the roof: battery voltage large enough to
-read from across the room, servo current, the address to type into a laptop, an
-artificial horizon from the IMU, the robot's state, and a STOP button. No other
-controls. STOP posts to `/stop`, which latches e-stop; clear it from the client
-page.
+read from across the room, servo current, the control URL to type into any
+phone or laptop, an artificial horizon from the IMU, the robot's state, and a
+STOP button. No other controls. The URL is the robot's own address with the
+scheme and port this page was served on, so on the hotspot it reads
+`https://10.42.0.1:8000`. STOP posts to `/stop`, which latches e-stop; clear it
+from the client page.
 
 A frame round the screen edge shows the six foot switches. Each leg owns the
 stretch of edge on its side of the robot, green while its switch is closed,

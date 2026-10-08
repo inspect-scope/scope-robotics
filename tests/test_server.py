@@ -60,7 +60,7 @@ def client(tmp_path):
 def test_pages_and_state_are_served(client):
     assert client.get("/").status_code == 200
     status = client.get("/status")
-    assert status.status_code == 200 and b"STOP" in status.content
+    assert status.status_code == 200 and b"STOP" in status.content and b'id="url"' in status.content
     body = client.get("/api/state").json()
     assert body["state"] == "off"
     assert set(body["feet"]) == set(body["coxae"]) == set(body["joints"]) == set(body["chains"])
