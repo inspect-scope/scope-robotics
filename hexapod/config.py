@@ -42,6 +42,26 @@ class LegConfig:
 
 
 @dataclass(frozen=True)
+class Shell:
+    """Printed body stack, mm. From Chica frame.stl / top-cover4 and body_v5."""
+
+    floor_xy: Tuple[float, float]
+    chamfer: float
+    frame_h: float
+    roof_z: float
+    cam_tilt: float
+
+
+DEFAULT_SHELL = Shell(
+    floor_xy=(130.0, 160.0),
+    chamfer=12.0,
+    frame_h=16.0,
+    roof_z=90.0,
+    cam_tilt=15.0,
+)
+
+
+@dataclass(frozen=True)
 class Geometry:
     coxa_len: float
     femur_len: float
@@ -163,6 +183,7 @@ class Config:
     camera: CameraConfig = field(default_factory=CameraConfig)
     safety: SafetyConfig = field(default_factory=SafetyConfig)
     panel: PanelConfig = field(default_factory=PanelConfig)
+    shell: Shell = DEFAULT_SHELL
 
 
 def _axis_map(raw: Any) -> Tuple[str, str, str]:
@@ -246,6 +267,20 @@ def _panel(raw: Dict[str, Any]) -> PanelConfig:
     return PanelConfig(front=front)
 
 
+def _shell(raw: Dict[str, Any]) -> Shell:
+    d = DEFAULT_SHELL
+    floor = tuple(raw.get("floor_xy", d.floor_xy))
+    if len(floor) != 2:
+        raise ValueError("shell.floor_xy is [width, length]")
+    return Shell(
+        floor_xy=(float(floor[0]), float(floor[1])),
+        chamfer=float(raw.get("chamfer", d.chamfer)),
+        frame_h=float(raw.get("frame_h", d.frame_h)),
+        roof_z=float(raw.get("roof_z", d.roof_z)),
+        cam_tilt=float(raw.get("cam_tilt", d.cam_tilt)),
+    )
+
+
 def load(path: str = DEFAULT_CONFIG) -> Config:
     with open(path) as handle:
         raw = yaml.safe_load(handle)
@@ -307,4 +342,5 @@ def load(path: str = DEFAULT_CONFIG) -> Config:
         camera=_camera(dict(raw.get("camera") or {})),
         safety=_safety(raw.get("safety") or {}),
         panel=_panel(dict(raw.get("panel") or {})),
+        shell=_shell(dict(raw.get("shell") or {})),
     )

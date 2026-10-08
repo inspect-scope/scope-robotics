@@ -152,6 +152,13 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                     "tibia_len": g.tibia_len,
                     "leg_connection_z": g.leg_connection_z,
                 },
+                "shell": {
+                    "floor_xy": list(config.shell.floor_xy),
+                    "chamfer": config.shell.chamfer,
+                    "frame_h": config.shell.frame_h,
+                    "roof_z": config.shell.roof_z,
+                    "cam_tilt": config.shell.cam_tilt,
+                },
                 "pulse_us": list(config.limits.pulse_us),
                 "servos": {
                     name: {joint: {"channel": cal.channel, "direction": cal.direction}
