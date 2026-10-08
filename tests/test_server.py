@@ -75,6 +75,9 @@ def test_pages_and_state_are_served(client):
     assert cfg["servos"]["L1"]["coxa"]["channel"] == l1["ch"]
     assert cfg["pulse_us"] == [600, 2400]
     assert cfg["geometry"]["coxa_len"] == 43
+    assert cfg["shell"]["floor_xy"] == [130, 160]
+    assert cfg["shell"]["cam_tilt"] == 15
+    assert cfg["yaws"]["R1"] == 63.0
 
 
 def test_stop_and_estop_work_over_plain_http(client):

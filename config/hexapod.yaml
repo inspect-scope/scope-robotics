@@ -51,6 +51,15 @@ limits:
   femur_deg: [-35, 115]
   tibia_deg: [30, 148]
 
+# Printed stack. Distances from Chica frame.stl + top-cover4 and
+# assets/print-me/body_v5. Swap in caliper / protractor readings when you have them.
+shell:
+  floor_xy: [130, 160]     # both electronics floors, mm
+  chamfer: 12               # clipped corners on the floors
+  frame_h: 16               # Chica frame thickness. CAD z=0 is the top face
+  roof_z: 90                # top of the roof plate (underside 87 + 3 mm)
+  cam_tilt: 15              # camera pod, degrees nose-down
+
 geometry:
   # Leg segment lengths, mm (COXA_LEN / FEMUR_LEN / TIBIA_LEN).
   coxa_len: 43
@@ -82,9 +91,11 @@ stance:
   min_foot_depth: 25       # feet stay at least this far below the body plane, mm
 
 # Body frame: +X right, +Y forward, +Z up, origin at the centre of the leg
-# connection plane. `coxa` is the coxa rotation centre; `neutral` is where the
-# foot sits when standing still; `yaw` is the direction the leg points, degrees
-# CCW from +X. Feet sit at z = -ride_height.
+# connection plane. Coxa xy is from the printed frame spans in chica-config:
+# L1_TO_R1 126, L1_TO_L3 167, L2_TO_R2 163. Neutral feet are MODE_STANDARD
+# (radius 220, corner 55°, elongation 1.15). yaw is the coxa-zero mount
+# direction, the bearing from each coxa to its stance foot. Measure the
+# pocket angle with a protractor if a print differs.
 legs:
   R1: {coxa: [ 63.0,  83.5], yaw:   63.0, neutral: [ 126.2,  207.2]}
   R2: {coxa: [ 81.5,   0.0], yaw:    0.0, neutral: [ 220.0,    0.0]}
