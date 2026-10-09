@@ -30,6 +30,9 @@ log = logging.getLogger(__name__)
 # their joint limits at low ride heights; see `hexapod check`.
 POSE_LIMITS = {"shift": 15.0, "roll": 8.0, "pitch": 8.0, "yaw": 8.0}
 HEIGHT_RATE = 60.0  # mm/s of ride-height change
+PLANT_RATE = 40.0  # mm/s. An open switch spends the drop budget in under half a second.
+PLANT_DROP = 15.0  # mm. A dead switch cannot push a foot further through the floor.
+PLANT_EPS = 1.0  # mm. A stance foot sits on z = -height. Swing feet are above that.
 COMMAND_TTL = 0.5  # a source's command is ignored once it is this old
 PUPPET_RATE = 40.0  # deg/s. A joint takes a few seconds to cross its range.
 PUPPET_TTL = 0.35  # a quiet page freezes the target; it does not finish the move
@@ -173,6 +176,7 @@ class Controller:
         self._puppet_goal: Optional[Dict[str, JointAngles]] = None
         self._puppet_at = 0.0
         self._puppet_home = False
+        self._plant: Dict[str, float] = {}
 
     # --- lifecycle ----------------------------------------------------------------
 
@@ -440,6 +444,7 @@ class Controller:
         self._puppet_held = None
         self._puppet_goal = None
         self._puppet_home = False
+        self._plant = {}
 
     def _limb_mode(self) -> str:
         if self._puppet_held is None:
@@ -518,6 +523,7 @@ class Controller:
             for name, (dx, dy, dz) in pincers.items():
                 x, y, z = feet[name]
                 feet[name] = (x + dx, y + dy, z + dz)
+        feet = self._plant_feet(feet, height, dt)
         pose = self.gait.pose_overlay(pose)
         angles, limited = self.kinematics.solve_reporting(feet, pose)
         pulses = self.kinematics.pulse_frame(angles)
@@ -594,6 +600,32 @@ class Controller:
             name: [[round(v, 1) for v in point] for point in points]
             for name, points in self.kinematics.chains(ahead, pose).items()
         }
+
+    def _plant_feet(self, feet: Dict[str, tuple], height: float, dt: float) -> Dict[str, tuple]:
+        """Lower a stance foot that has not touched, and stop at `PLANT_DROP`.
+
+        Swing feet stay on the gait arc. A closed switch holds its drop, so a
+        planted foot does not keep digging. A missing switch counts as closed.
+        """
+        contacts = self.board.telemetry.contacts
+        ground = -height
+        step = PLANT_RATE * dt
+        with self._lock:
+            prev = dict(self._plant)
+            out: Dict[str, tuple] = {}
+            plant: Dict[str, float] = {}
+            for name, point in feet.items():
+                x, y, z = point
+                if z > ground + PLANT_EPS:
+                    drop = 0.0
+                elif contacts.get(name, True):
+                    drop = prev.get(name, 0.0)
+                else:
+                    drop = min(PLANT_DROP, prev.get(name, 0.0) + step)
+                plant[name] = drop
+                out[name] = (x, y, z - drop)
+            self._plant = plant
+            return out
 
     def _feet_of(self, angles: Dict[str, JointAngles], pose: BodyPose) -> Dict[str, tuple]:
         feet: Dict[str, tuple] = {}
