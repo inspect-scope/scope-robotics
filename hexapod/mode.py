@@ -20,7 +20,7 @@ OFFROAD_HEIGHT = 60.0 / 40.0
 OFFROAD_LIFT = 99.0 / 40.0
 OFFROAD_SPEED = 0.6
 
-RIDE_MAX_MM = 105.0
+RIDE_MAX_MM = 160.0  # offroad is 1.5x stand; 160 still solves inside the joint box
 LIFT_RANGE = (5.0, 70.0)
 CYCLE_RANGE = (0.3, 2.5)
 SPEED_RANGE = (10.0, 250.0)

@@ -222,10 +222,12 @@ def test_the_trip_covers_jog_too():
 def test_controller_resets_its_pose_on_a_board_trip(stack):
     controller, board = stack()
     controller.stand()
-    assert _wait_for(lambda: controller.snapshot().state == "standing")
+    assert _wait_for(
+        lambda: controller.snapshot().height > controller.config.stance.ride_height - 1, seconds=3.0
+    )
     board.fake_amps_on = 14.0
     assert _wait_for(lambda: controller.snapshot().estopped)
-    assert _wait_for(lambda: controller.snapshot().height < controller.config.stance.ride_height - 1, seconds=2.0)
+    assert _wait_for(lambda: controller.snapshot().height < controller.config.stance.ride_height - 1, seconds=3.0)
     assert controller._height_target == controller.config.stance.sit_height
     assert not controller._standing
     assert _wait_for(lambda: not board.torque_on, seconds=1.0)   # the IO thread applies it next tick

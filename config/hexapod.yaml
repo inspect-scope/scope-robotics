@@ -81,7 +81,7 @@ geometry:
   tibia_attach_angle: 68
 
 stance:
-  ride_height: 80          # body origin above the feet when standing, mm
+  ride_height: 105         # body origin above the feet when standing, mm
   sit_height: 40           # ditto when sat down (LEG_SITTING_Z)
   step_lift: 40            # peak foot lift during swing, mm
   cycle_s: 0.8             # one full gait cycle

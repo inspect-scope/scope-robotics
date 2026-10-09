@@ -22,7 +22,7 @@ from .board import LoadKind, Servo2040
 from .config import JOINTS, Config
 from .gait import Gait, TrickKind, Velocity, MENU_TRICKS, POSE_TRICKS
 from .kinematics import BodyPose, HexapodKinematics, JointAngles
-from .mode import StanceMode, lookup_mode, modes_for
+from .mode import RIDE_MAX_MM, StanceMode, lookup_mode, modes_for
 
 log = logging.getLogger(__name__)
 
@@ -238,7 +238,7 @@ class Controller:
     def set_height(self, height: float) -> None:
         s = self.config.stance
         with self._lock:
-            self._height_target = max(s.sit_height, min(105.0, float(height)))
+            self._height_target = max(s.sit_height, min(RIDE_MAX_MM, float(height)))
             self._standing = self._height_target > s.sit_height + 1.0
             # A height change under a hand-posed leg jams the joint. Start the return.
             if self._puppet_held is not None:

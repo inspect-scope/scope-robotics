@@ -176,15 +176,15 @@ straight and a forward command turns. See the 8 Oct 2026 entry in
 
 Femur and tibia are easier to read as a sit-to-stand move than as a single
 angle. These are the neutral poses the solver produces at `sit_height` 40 and
-`ride_height` 80, the same for all six legs to within 0.3°:
+`ride_height` 105, the same for all six legs to within 0.3°:
 
 | joint | sit | stand | sit → stand |
 |---|---|---|---|
 | coxa | 0.1° | 0.1° | nothing |
-| femur | 77.8° | 46.2° | drops 31.6° |
-| tibia | 131.7° | 118.6° | knee opens 13.1° |
+| femur | 78.1° | 27.3° | drops 50.8° |
+| tibia | 132.0° | 106.8° | knee opens 25.2° |
 
-In jog, `R3 0 77.8 131.7` then `R3 0 46.2 118.6`. The femur must rotate **down**
+In jog, `R3 0 78.1 132.0` then `R3 0 27.3 106.8`. The femur must rotate **down**
 and the knee must **open**, pushing the foot further below the body. A femur
 that rises is an inverted femur, a knee that closes is an inverted tibia, and
 both can be wrong at once. Coxa barely moves between the two poses, so check it
@@ -192,7 +192,7 @@ on its own: `R3 coxa 20` swings the leg counter-clockwise seen from above.
 
 `tibia` is the fold at the knee, 0 = tibia in line with the femur. The interior
 femur-to-tibia angle you would put a protractor on is 180 minus that, so 48°
-sitting and 61° standing. Same movement, and the two conventions run opposite
+sitting and 73° standing. Same movement, and the two conventions run opposite
 ways, so be clear which one a number is in before acting on it.
 
 Flipping `direction` does not move the servo's centre. `servo_angle =
@@ -219,7 +219,7 @@ changed, with the leg and joint, the SERVO header number, the joint angle the
 solver asked for and the pulse that went out:
 
 ```
-14:02:11.318  R3 femur   SERVO  2 (ch  1)    77.8 ->   46.2 deg   1500 -> 1622 us (+122)
+14:02:11.318  R3 femur   SERVO  2 (ch  1)    77.8 ->   27.3 deg   1976 -> 1414 us (-562)
 ```
 
 Ctrl-C prints a summary: start, end, net travel and range for every channel,

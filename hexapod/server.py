@@ -28,7 +28,7 @@ from .config import JOINTS, Config
 from .controller import COMMAND_TTL, POSE_LIMITS, PlaceAt, Controller
 from .gait import TrickKind, WALK_KINDS, walk_catalog, trick_catalog, Velocity
 from .hand import Follow
-from .mode import MODE_KINDS, mode_catalog
+from .mode import MODE_KINDS, RIDE_MAX_MM, mode_catalog
 from .state import RobotState
 
 log = logging.getLogger(__name__)
@@ -127,7 +127,7 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
         return JSONResponse(
             {
                 "pose_limits": POSE_LIMITS,
-                "height": {"min": s.sit_height, "max": 105.0, "default": s.ride_height},
+                "height": {"min": s.sit_height, "max": RIDE_MAX_MM, "default": s.ride_height},
                 "gait": {
                     "cycle_s": s.cycle_s,
                     "step_lift": s.step_lift,
