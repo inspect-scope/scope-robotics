@@ -1460,6 +1460,11 @@ function init3d() {
       const mm = mmPerCss(drag.origin);
       const shift = vadd(vscale(uncam([1, 0, 0]), dx * mm), vscale(uncam([0, 1, 0]), -dy * mm));
       drag.point = vadd(drag.origin, shift);
+      // The stance plane is the floor. The foot grab stops on it.
+      if (drag.at === "foot" && bot3d.state) {
+        const ground = -Number(bot3d.state.height);
+        if (Number.isFinite(ground) && drag.point[2] < ground) drag.point[2] = ground;
+      }
       sendAim(drag, false);
       syncCompass();
       return;

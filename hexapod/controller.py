@@ -358,8 +358,9 @@ class Controller:
         """Solve one leg so its foot or knee moves toward a ground-frame point.
 
         Joint limits still apply, and the coxa target cannot jump past
-        `PUPPET_COXA_STEP` from where the leg is now. A knee grab leaves the tibia
-        where it was. Ignored unless holding.
+        `PUPPET_COXA_STEP` from where the leg is now. A foot stays on or above the
+        stance plane. A knee grab leaves the tibia where it was, and is ignored
+        if it would put the foot through the floor. Ignored unless holding.
         """
         if leg not in self.kinematics.legs or at not in (PlaceAt.Foot, PlaceAt.Knee):
             return
@@ -383,6 +384,11 @@ class Controller:
             pose = self._pose
             held = held_map[leg]
             tibia = goal[leg].tibia
+            ground = -self._height
+
+        # The stance plane is the floor. A foot grab stops there instead of digging.
+        if at == PlaceAt.Foot:
+            z = max(z, ground)
 
         kin = self.kinematics.legs[leg]
         local = kin.body_to_leg(pose.foot_to_body((x, y, z)))
@@ -398,10 +404,15 @@ class Controller:
                 "tibia": tibia,
             }
 
+        candidate = JointAngles(**parts)
+        foot_z = self._feet_of({leg: candidate}, pose)[leg][2]
+        if foot_z < ground - PLANT_EPS:
+            return
+
         with self._lock:
             if self._puppet_goal is None or leg not in self._puppet_goal or self._puppet_home:
                 return
-            self._puppet_goal[leg] = JointAngles(**parts)
+            self._puppet_goal[leg] = candidate
             self._puppet_at = time.monotonic()
 
     def _solve_foot(self, kin, local: tuple, coxa_now: float):

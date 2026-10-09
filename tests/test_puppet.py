@@ -135,6 +135,30 @@ def _ground(controller, leg, index):
     return controller._pose.body_to_ground(body)
 
 
+def _goal_z(controller, leg):
+    kin = controller.kinematics.legs[leg]
+    body = kin.chain(controller._puppet_goal[leg])[3]
+    return controller._pose.body_to_ground(body)[2]
+
+
+def test_a_foot_grab_stops_at_the_floor():
+    controller, board = _open()
+    try:
+        assert controller.arm_puppeteer()
+        foot = _ground(controller, "L2", 3)
+        ground = -controller.snapshot().height
+        controller.aim_point("L2", "foot", foot[0], foot[1], foot[2] - 40)
+        assert _goal_z(controller, "L2") == pytest.approx(ground, abs=1.0)
+        knee = _ground(controller, "L2", 2)
+        before = controller._puppet_goal["L2"].as_tuple()
+        controller.aim_point("L2", "knee", knee[0], knee[1], knee[2] - 60)
+        assert _goal_z(controller, "L2") >= ground - 1.0
+        assert controller._puppet_goal["L2"].as_tuple() == pytest.approx(before, abs=0.2)
+    finally:
+        controller.estop()
+        board.close()
+
+
 def test_placing_the_current_foot_does_not_move_it():
     controller, board = _open()
     try:
