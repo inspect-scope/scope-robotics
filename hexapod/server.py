@@ -24,8 +24,8 @@ from pydantic import BaseModel
 
 from .board import BoardError
 from .camera import Camera, CameraError
-from .config import Config
-from .controller import COMMAND_TTL, POSE_LIMITS, Controller
+from .config import JOINTS, Config
+from .controller import COMMAND_TTL, POSE_LIMITS, PlaceAt, Controller
 from .gait import TrickKind, WALK_KINDS, walk_catalog, trick_catalog, Velocity
 from .hand import Follow
 from .mode import MODE_KINDS, mode_catalog
@@ -160,6 +160,7 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
                     "cam_tilt": config.shell.cam_tilt,
                 },
                 "pulse_us": list(config.limits.pulse_us),
+                "joint_deg": {joint: list(config.limits.joint_range(joint)) for joint in JOINTS},
                 "servos": {
                     name: {joint: {"channel": cal.channel, "direction": cal.direction}
                            for joint, cal in leg.servos.items()}
@@ -265,9 +266,12 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
         peer = socket.client.host if socket.client else "?"
         log.info("client connected: %s", peer)
         pusher = asyncio.create_task(_push_state(socket, state))
+        posed = False
         try:
             while True:
                 message = await socket.receive_json()
+                if message.get("type") == "puppeteer":
+                    posed = True
                 _handle(controller, config, message, hand=state.hand)
         except WebSocketDisconnect:
             log.info("client disconnected: %s", peer)
@@ -277,6 +281,9 @@ def create_app(state: RobotState, config: Config) -> FastAPI:
             pusher.cancel()
             # Let the command expire rather than stopping hard: a phone that drops
             # off wifi mid-stride should coast to a halt, not drop on its face.
+            # Only the client that was posing slews home. A second socket must not.
+            if posed:
+                controller.home_puppeteer()
             controller.drop_source(WEB_SOURCE)
 
     @app.websocket("/telemetry")
@@ -387,6 +394,8 @@ def _handle(controller: Controller, config: Config, message: Dict[str, Any], han
                 controller.start_trick(str(name))
             except ValueError:
                 log.warning("bad trick %r", name)
+    elif kind == "puppeteer":
+        _puppeteer(controller, message, hand)
     elif kind == "hand":
         if hand is None:
             log.warning("hand follow is not available")
@@ -405,6 +414,32 @@ def _handle(controller: Controller, config: Config, message: Dict[str, Any], han
         pass
     else:
         log.warning("ignoring unknown message type %r", kind)
+
+
+def _puppeteer(controller: Controller, message: Dict[str, Any], hand) -> None:
+    """Arm, aim one joint, freeze, or slew home. Arming never enables torque."""
+    if "on" in message:
+        if message.get("on"):
+            if hand is not None:
+                try:
+                    hand.set_follow(Follow.Off)
+                except ValueError:
+                    log.warning("could not pause hand follow")
+            if not controller.arm_puppeteer():
+                log.warning("puppeteer refused: torque off or estop latched")
+        else:
+            controller.home_puppeteer()
+        return
+    if message.get("hold"):
+        controller.hold_puppeteer()
+        return
+    if "leg" in message and message.get("at") in (PlaceAt.Foot, PlaceAt.Knee):
+        controller.aim_point(
+            message.get("leg"), message.get("at"), message.get("x"), message.get("y"), message.get("z"),
+        )
+        return
+    if "leg" in message and "joint" in message and "deg" in message:
+        controller.aim_joint(message.get("leg"), message.get("joint"), message.get("deg"))
 
 
 def _tune(config: Config, message: Dict[str, Any]) -> None:

@@ -156,6 +156,26 @@ class LegKinematics:
 
         return JointAngles(coxa=coxa, femur=femur, tibia=tibia)
 
+    def ik_knee(self, knee_leg: Vec3) -> Tuple[float, float]:
+        """Knee position in the leg frame -> coxa and femur, in degrees.
+
+        The knee is the end of the femur, so this does not choose a tibia angle.
+        A target off the femur arc is pulled onto it.
+        """
+        g = self.geometry
+        x, y, z = knee_leg
+        flat = math.hypot(x, y)
+        coxa = math.degrees(math.atan2(y, x)) if flat > 1e-3 else 0.0
+        along = flat - g.coxa_len
+        dist = math.hypot(along, z)
+        if dist < 1e-3:
+            along, z = g.femur_len, 0.0
+        else:
+            scale = g.femur_len / dist
+            along *= scale
+            z *= scale
+        return coxa, math.degrees(math.atan2(z, along))
+
     def fk(self, angles: JointAngles) -> Vec3:
         """Joint angles -> foot position in the leg frame. Used to check `ik`."""
         g = self.geometry

@@ -33,6 +33,17 @@ def test_neutral_stance_is_within_every_joint_limit(kinematics):
         assert limited == [], height
 
 
+def test_knee_ik_recovers_coxa_and_femur(kinematics):
+    from hexapod.kinematics import JointAngles
+
+    for name, leg in kinematics.legs.items():
+        angles = JointAngles(coxa=12.0, femur=35.0, tibia=90.0)
+        knee = leg.body_to_leg(leg.chain(angles)[2])
+        coxa, femur = leg.ik_knee(knee)
+        assert coxa == pytest.approx(angles.coxa, abs=1e-6), name
+        assert femur == pytest.approx(angles.femur, abs=1e-6), name
+
+
 def test_chain_foot_matches_fk(kinematics):
     for name, leg in kinematics.legs.items():
         angles = kinematics.solve(kinematics.neutral_feet())[name]

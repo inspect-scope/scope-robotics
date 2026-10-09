@@ -135,6 +135,15 @@ main { flex: 1; display: flex; flex-direction: column; gap: 12px; padding: 12px 
 .stage3d canvas { width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
 .stage3d .hint { position: absolute; left: 10px; right: 88px; bottom: 8px;
   font-size: 11px; color: var(--muted); pointer-events: none; }
+.stage3d.armed { border-color: var(--warning); }
+.stage3d.armed canvas { cursor: crosshair; }
+.stage3d .tools {
+  position: absolute; top: 8px; left: 8px; z-index: 1;
+  display: flex; gap: 6px;
+}
+.stage3d .puppet { padding: 6px 10px; }
+.stage3d .puppet.on { background: var(--warning); border-color: var(--warning); color: #111; }
+#place.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .stage3d .compass {
   position: absolute; top: 8px; right: 8px; z-index: 1;
   min-width: 70px; padding: 6px 8px; text-align: center; line-height: 1.2;
@@ -294,6 +303,10 @@ summary { padding: 10px 14px; cursor: pointer; color: var(--ink-2); font-size: 1
     </div>
     <div class="stage3d" id="stage3d">
       <canvas id="bot3d" width="640" height="640" aria-label="Expected 3D pose from commanded servo pulses"></canvas>
+      <div class="tools">
+        <button class="puppet" id="puppet" type="button" title="pose one joint at a time">Puppet</button>
+        <button class="puppet" id="place" type="button" title="grab a foot or a knee">Place</button>
+      </div>
       <button class="compass" id="compass" type="button" title="cycle view mode">
         <span id="compass-mode">orbit</span>
         <span class="n" id="compass-n">N</span>
@@ -954,6 +967,7 @@ async function loadConfig() {
   if (cfg.shell) shell = cfg.shell;
   if (cfg.yaws) yaws = cfg.yaws;
   actLimits = cfg.pulse_us || [600, 2400];
+  if (cfg.joint_deg) jointDeg = cfg.joint_deg;
 }
 
 /* ---------------- top-down stance view ---------------- */
@@ -1062,7 +1076,23 @@ function drawStance(s) {
 
 /* ---------------- servo actuation table ---------------- */
 const JOINTS = ["coxa", "femur", "tibia"];
+const LimbMode = Object.freeze({ Off: "off", Hold: "hold", Home: "home" });
+const PUPPET_DEG_PX = 0.45;
+const HINGES = [
+  { joint: "coxa", index: 0 },
+  { joint: "femur", index: 1 },
+  { joint: "tibia", index: 2 },
+];
+const PLACE_GRABS = [
+  { at: "knee", index: 2 },
+  { at: "foot", index: 3 },
+];
 let actLimits = [600, 2400];
+let jointDeg = { coxa: [-50, 50], femur: [-35, 115], tibia: [30, 148] };
+const puppet = {
+  mode: LimbMode.Off, drag: null, sentAt: 0, torque: false, estopped: false,
+  note: "", noteUntil: 0, place: false,
+};
 
 function buildActuators(legs, servos) {
   const grid = $("actuators");
@@ -1117,7 +1147,7 @@ const VIEW_HINT = {
 };
 const bot3d = {
   yaw: 0.7, pitch: 0.85, dist: 720, drag: false, last: [0, 0], state: null,
-  mode: ViewMode.Orbit, spin: 0,
+  mode: ViewMode.Orbit, spin: 0, handles: [],
 };
 let headingDeg = 0;
 let headingAt = 0;
@@ -1141,10 +1171,93 @@ function tickHeading(s) {
   headingDeg += ((s.velocity && s.velocity.yaw_rate) || 0) * dt;
 }
 
+function puppetHint() {
+  const drag = puppet.drag;
+  if (drag && drag.place) return `${drag.leg} ${drag.at}`;
+  if (drag) return `${drag.leg} ${drag.joint} ${drag.deg.toFixed(0)}°`;
+  if (puppet.mode === LimbMode.Hold && puppet.place) return "drag a foot or a knee · release holds";
+  if (puppet.mode === LimbMode.Hold) return "hip sideways · knee up and down · release holds";
+  if (puppet.mode === LimbMode.Home) return "returning home";
+  if (performance.now() < puppet.noteUntil) return puppet.note;
+  return "";
+}
+
 function syncCompass() {
   $("compass-mode").textContent = bot3d.mode;
   $("compass-n").textContent = `${((headingDeg % 360) + 360) % 360 | 0}°`;
-  $("view-hint").textContent = VIEW_HINT[bot3d.mode];
+  $("view-hint").textContent = puppetHint() || VIEW_HINT[bot3d.mode];
+  $("puppet").classList.toggle("on", puppet.mode !== LimbMode.Off);
+  $("place").classList.toggle("on", puppet.place);
+  $("stage3d").classList.toggle("armed", puppet.mode === LimbMode.Hold);
+}
+
+function canvasPos(ev, canvas) {
+  const r = canvas.getBoundingClientRect();
+  return [
+    (ev.clientX - r.left) * (canvas.width / r.width),
+    (ev.clientY - r.top) * (canvas.height / r.height),
+  ];
+}
+
+function pickHinge(ev, canvas) {
+  if (puppet.mode !== LimbMode.Hold) return null;
+  const [x, y] = canvasPos(ev, canvas);
+  const reach = 22 * (canvas.width / canvas.getBoundingClientRect().width);
+  let best = null;
+  let bestScore = Infinity;
+  for (const hinge of bot3d.handles) {
+    const d = Math.hypot(hinge.x - x, hinge.y - y);
+    if (d > reach) continue;
+    // Screen distance wins. Depth only breaks two rings that sit on top of each other.
+    const score = d + (hinge.z || 0) * 0.01;
+    if (score >= bestScore) continue;
+    best = hinge;
+    bestScore = score;
+  }
+  return best;
+}
+
+function clampJoint(joint, deg) {
+  const range = jointDeg[joint];
+  if (!range) return deg;
+  return clamp(deg, range[0], range[1]);
+}
+
+function sendAim(drag, force) {
+  const now = performance.now();
+  if (!force && now - puppet.sentAt < 40) return;
+  puppet.sentAt = now;
+  if (drag.place) {
+    const p = drag.point;
+    send({
+      type: "puppeteer", leg: drag.leg, at: drag.at,
+      x: Math.round(p[0] * 10) / 10, y: Math.round(p[1] * 10) / 10, z: Math.round(p[2] * 10) / 10,
+    });
+    return;
+  }
+  send({ type: "puppeteer", leg: drag.leg, joint: drag.joint, deg: Math.round(drag.deg * 10) / 10 });
+}
+
+function togglePlace() {
+  puppet.place = !puppet.place;
+  puppet.drag = null;
+  syncCompass();
+  draw3d(bot3d.state);
+}
+
+function togglePuppet() {
+  if (puppet.mode === LimbMode.Off) {
+    if (puppet.estopped || !puppet.torque) {
+      puppet.note = puppet.estopped ? "clear e-stop first" : "torque on first";
+      puppet.noteUntil = performance.now() + 1600;
+      syncCompass();
+      return;
+    }
+    send({ type: "puppeteer", on: true });
+    return;
+  }
+  puppet.drag = null;
+  send({ type: "puppeteer", on: false });
 }
 
 function vsub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
@@ -1185,6 +1298,32 @@ function project3d(p, w, h) {
   const z = r[2] + bot3d.dist;
   const f = 1.2 * Math.min(w, h);
   return [w / 2 + r[0] * f / z, h / 2 - r[1] * f / z, z];
+}
+
+function cameraYaw() {
+  let yaw = bot3d.yaw;
+  if (bot3d.mode === ViewMode.Follow) yaw -= headingDeg * Math.PI / 180;
+  return yaw;
+}
+
+function uncam(c) {
+  // Inverse of camPoint, so a screen-right or screen-up vector becomes ground mm.
+  const yaw = cameraYaw();
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const cp = Math.cos(bot3d.pitch), sp = Math.sin(bot3d.pitch);
+  const y1 = c[1] * sp + c[2] * cp;
+  const qz = c[1] * cp - c[2] * sp;
+  const qx = c[0] * cy + y1 * sy;
+  const qy = -c[0] * sy + y1 * cy;
+  return headingPoint([qx, qy, qz], -bot3d.spin);
+}
+
+function mmPerCss(world) {
+  const canvas = $("bot3d");
+  const depth = camPoint(world)[2] + bot3d.dist;
+  const f = 1.2 * Math.min(canvas.width, canvas.height);
+  const rect = canvas.getBoundingClientRect();
+  return depth / f * (canvas.width / Math.max(1, rect.width));
 }
 
 function shadeHex(hex, normal) {
@@ -1287,13 +1426,53 @@ function init3d() {
     syncCompass();
     draw3d(bot3d.state);
   };
+  $("puppet").onclick = () => togglePuppet();
+  $("place").onclick = () => togglePlace();
   canvas.addEventListener("pointerdown", (ev) => {
+    const hit = pickHinge(ev, canvas);
+    if (hit && hit.at) {
+      puppet.drag = {
+        place: true, leg: hit.leg, at: hit.at,
+        x: ev.clientX, y: ev.clientY, origin: hit.world.slice(), point: hit.world.slice(),
+      };
+      canvas.setPointerCapture(ev.pointerId);
+      canvas.style.cursor = "grabbing";
+      return;
+    }
+    if (hit) {
+      const angles = (bot3d.state && bot3d.state.angles && bot3d.state.angles[hit.leg]) || {};
+      const deg = Number(angles[hit.joint]) || 0;
+      puppet.drag = { leg: hit.leg, joint: hit.joint, x: ev.clientX, y: ev.clientY, deg0: deg, deg };
+      canvas.setPointerCapture(ev.pointerId);
+      canvas.style.cursor = "grabbing";
+      return;
+    }
     bot3d.drag = true;
     bot3d.last = [ev.clientX, ev.clientY];
     canvas.setPointerCapture(ev.pointerId);
     canvas.style.cursor = "grabbing";
   });
   canvas.addEventListener("pointermove", (ev) => {
+    const drag = puppet.drag;
+    if (drag && drag.place) {
+      const dx = ev.clientX - drag.x;
+      const dy = ev.clientY - drag.y;
+      const mm = mmPerCss(drag.origin);
+      const shift = vadd(vscale(uncam([1, 0, 0]), dx * mm), vscale(uncam([0, 1, 0]), -dy * mm));
+      drag.point = vadd(drag.origin, shift);
+      sendAim(drag, false);
+      syncCompass();
+      return;
+    }
+    if (drag) {
+      const dx = ev.clientX - drag.x;
+      const dy = ev.clientY - drag.y;
+      const delta = drag.joint === "coxa" ? dx * PUPPET_DEG_PX : -dy * PUPPET_DEG_PX;
+      drag.deg = clampJoint(drag.joint, drag.deg0 + delta);
+      sendAim(drag, false);
+      syncCompass();
+      return;
+    }
     if (!bot3d.drag) return;
     const dx = ev.clientX - bot3d.last[0], dy = ev.clientY - bot3d.last[1];
     bot3d.last = [ev.clientX, ev.clientY];
@@ -1301,7 +1480,18 @@ function init3d() {
     bot3d.pitch = clamp(bot3d.pitch + dy * 0.01, 0.18, 1.45);
     draw3d(bot3d.state);
   });
-  const endDrag = () => { bot3d.drag = false; canvas.style.cursor = "grab"; };
+  const endDrag = () => {
+    if (puppet.drag) {
+      sendAim(puppet.drag, true);
+      send({ type: "puppeteer", hold: true });
+      puppet.drag = null;
+      canvas.style.cursor = "";
+      syncCompass();
+      return;
+    }
+    bot3d.drag = false;
+    canvas.style.cursor = "";
+  };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
   canvas.addEventListener("wheel", (ev) => {
@@ -1428,6 +1618,60 @@ function draw3d(s) {
   ctx.fill();
 
   paint(pads);
+  paintGhost(ctx, s, w, h);
+  paintHinges(ctx, s, w, h);
+}
+
+function paintGhost(ctx, s, w, h) {
+  const ghost = s && s.ghost;
+  if (!ghost) return;
+  const scale = w / Math.max(1, $("stage3d").getBoundingClientRect().width);
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = "rgba(57,135,229,.9)";
+  ctx.fillStyle = "rgba(57,135,229,.35)";
+  ctx.lineWidth = Math.max(2, 2.2 * scale);
+  ctx.setLineDash([7 * scale, 5 * scale]);
+  for (const points of Object.values(ghost)) {
+    if (!points || points.length < 4) continue;
+    const pts = points.map((p) => project3d(p, w, h));
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.stroke();
+    const tip = pts[pts.length - 1];
+    ctx.beginPath();
+    ctx.arc(tip[0], tip[1], 6 * scale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function paintHinges(ctx, s, w, h) {
+  bot3d.handles = [];
+  if (puppet.mode !== LimbMode.Hold || !s) return;
+  const stageW = Math.max(1, $("stage3d").getBoundingClientRect().width);
+  const scale = w / stageW;
+  const drag = puppet.drag;
+  const grabs = puppet.place ? PLACE_GRABS : HINGES;
+  for (const [name, points] of Object.entries(s.chains || {})) {
+    if (!points || points.length < (puppet.place ? 4 : 3)) continue;
+    for (const grab of grabs) {
+      const world = points[grab.index];
+      const p = project3d(world, w, h);
+      const hot = drag && drag.leg === name && (grab.at ? drag.at === grab.at : drag.joint === grab.joint);
+      const radius = (grab.at === "foot" ? 13 : 11) * scale;
+      bot3d.handles.push({
+        leg: name, joint: grab.joint, at: grab.at, x: p[0], y: p[1], z: p[2], world: world.slice(),
+      });
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], radius, 0, Math.PI * 2);
+      ctx.strokeStyle = hot ? "#fff4d0" : (grab.at === "foot" ? "#3987e5" : "#fab219");
+      ctx.lineWidth = Math.max(2, scale * 2);
+      ctx.stroke();
+    }
+  }
 }
 
 /* ---------------- render ---------------- */
@@ -1486,6 +1730,11 @@ function render(s) {
   $("imu-state").textContent = (imu.ok ? `gyro ${(imu.gyro || []).map((g) => g.toFixed(0)).join(" ")} °/s`
     : imu.calibrating ? "calibrating, hold still" : imu.error ? "offline" : "no data")
     + (imu.read_errors ? ` · ${imu.read_errors} bus errors, ${imu.read_failures} unrecovered` : "");
+  puppet.torque = !!s.torque;
+  puppet.estopped = !!s.estopped;
+  const nextMode = s.puppeteer || LimbMode.Off;
+  if (nextMode !== LimbMode.Hold) puppet.drag = null;
+  puppet.mode = nextMode;
   tickHeading(s);
   syncCompass();
   setLive(!!(s.camera && s.camera.ok));
